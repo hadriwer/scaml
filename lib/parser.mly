@@ -12,6 +12,17 @@ let operator_tbl = Hashtbl.create 97
 
 let trait_def = Hashtbl.create 97
 
+(* Per trait declaring a type constructor (`type t of 1`): that
+   constructor's name and arity. Such a trait's self type is the
+   constructor itself, and its other names (e.g. `a`, `b`) are plain type
+   variables in its signature rather than abstract types: see [item]'s
+   TRAIT rule and [mkctorimpl]. *)
+let trait_ctor : (string, string * int) Hashtbl.t = Hashtbl.create 97
+
+(* The type parameters of an [arity]-ary constructor: ['x0; 'x1; ...]. *)
+let ctor_params loc arity =
+  List.init arity (fun i -> (Ast_helper.Typ.var ~loc (Printf.sprintf "x%d" i), (NoVariance, NoInjectivity)))
+
 (* Per trait method name (e.g. "print", "fold_left", or an operator's
    generated "op___N___"): its full params-then-return type-name chain,
    e.g. ["a"; "a"; "bool"] for `a -> a -> bool` (same convention as
@@ -86,6 +97,9 @@ let rec placeholder_names_in_type (ty : core_type) : string list =
   match ty.ptyp_desc with
   | Ptyp_arrow (_, t1, t2) -> placeholder_names_in_type t1 @ placeholder_names_in_type t2
   | Ptyp_constr ({ txt = Longident.Lident name; _ }, []) when not (List.mem name known_types) -> [ name ]
+  (* `a t`: the constructor `t` itself is declared explicitly (`type t of
+     1`); only its arguments may be placeholders. *)
+  | Ptyp_constr (_, args) -> List.concat_map placeholder_names_in_type args
   | _ -> []
 
 let make_value loc name (ty : core_type) =
@@ -210,6 +224,33 @@ let annotate_self_params self_name (methods : structure_item list) : structure_i
       | _ -> item)
     methods
 
+(* `impl <trait> of <ty>` for a trait whose self type is a constructor
+   (`type t of 1`): the constructor is [ty] itself, and the methods stay
+   polymorphic in everything else:
+
+     module Mappable__array =
+       (struct type 'x0 t = 'x0 array let map = Array.map end
+        : mappable with type 'x0 t = 'x0 array) *)
+let mkctorimpl loc mod_name trait_name ty ctor ctor_arity methods =
+  if type_arity ty <> ctor_arity then
+    raise (Location.Error (Location.error ~loc
+      (Printf.sprintf "`%s` takes %d type parameter(s), but trait `%s`'s `%s` needs %d"
+         ty (type_arity ty) trait_name ctor ctor_arity)));
+  let params = ctor_params loc ctor_arity in
+  let ctor_decl =
+    Ast_helper.Type.mk ~loc ~params
+      ~manifest:(Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident ty) loc) (List.map fst params))
+      (Location.mkloc ctor loc)
+  in
+  let body =
+    Ast_helper.Mod.constraint_ ~loc
+      (Ast_helper.Mod.structure ~loc (Ast_helper.Str.type_ ~loc Recursive [ ctor_decl ] :: methods))
+      (Ast_helper.Mty.with_ ~loc
+         (Ast_helper.Mty.ident ~loc (Location.mkloc (Longident.Lident trait_name) loc))
+         [ Pwith_type (Location.mkloc (Longident.Lident ctor) loc, ctor_decl) ])
+  in
+  Ast_helper.Str.module_ ~loc (Ast_helper.Mb.mk (Location.mkloc (Some mod_name) loc) body)
+
 (* [#use "path"]: [path] is plain OCaml (not SCaml), so it's parsed with
    OCaml's own parser (Parse.implementation, the same entry point ocamlopt
    itself uses for a .ml file) rather than our lexer/parser, and its
@@ -257,6 +298,9 @@ type_declaration:
 type_atom:
   | ty = IDENT
       { mk_type_component (mkloc $startpos $endpos) ty }
+  | arg = type_atom; c = IDENT
+      { let loc = mkloc $startpos $endpos in
+        Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident c) loc) [ arg ] }
   | LPAREN; t = type_declaration; RPAREN
       { t }
 
@@ -298,6 +342,10 @@ atom_body_trait_def:
         Ast_helper.Sig.value ~loc (make_value loc n t) }
   | TYPE; t = type_declaration_trait_def
       { Ast_helper.Sig.type_ Recursive t }
+  | TYPE; c = IDENT; OF; arity = INT
+      { let loc = mkloc $startpos $endpos in
+        Ast_helper.Sig.type_ ~loc Recursive
+          [ Ast_helper.Type.mk ~loc ~params:(ctor_params loc arity) (Location.mkloc c loc) ] }
 
 item:
   | FN; name = IDENT; params = fn_params;
@@ -315,14 +363,13 @@ item:
   | TRAIT; name = IDENT; LBRACE; sigs = list(atom_body_trait_def); RBRACE
     { 
       let loc = mkloc $startpos $endpos in
-      let explicit_types =
+      let all_decls =
         List.concat_map
-          (fun (si : signature_item) ->
-            match si.psig_desc with
-            | Psig_type (_, decls) -> List.map (fun d -> d.ptype_name.txt) decls
-            | _ -> [])
+          (fun (si : signature_item) -> match si.psig_desc with Psig_type (_, decls) -> decls | _ -> [])
           sigs
       in
+      let ctor_decls = List.filter (fun d -> d.ptype_params <> []) all_decls in
+      let explicit_types = List.filter_map (fun d -> if d.ptype_params = [] then Some d.ptype_name.txt else None) all_decls in
       let placeholder_types =
         List.concat_map
           (fun (si : signature_item) ->
@@ -331,19 +378,50 @@ item:
             | _ -> [])
           sigs
       in
-      let abstract_types = dedup_preserve_order (explicit_types @ placeholder_types) in
+      let ctor_names = List.map (fun d -> d.ptype_name.txt) ctor_decls in
+      let abstract_types =
+        dedup_preserve_order (explicit_types @ placeholder_types)
+        |> List.filter (fun n -> not (List.mem n ctor_names))
+      in
+      (* The constructor, if any, comes last: bin/main.ml takes a trait's
+         last declared type as its self type. *)
       let type_decls =
         List.map
           (fun n -> Ast_helper.Sig.type_ ~loc Recursive [ Ast_helper.Type.mk ~loc (Location.mkloc n loc) ])
           abstract_types
+        @ List.map (fun d -> Ast_helper.Sig.type_ ~loc Recursive [ d ]) ctor_decls
       in
+      (match ctor_decls with
+       | [] -> ()
+       | [ d ] -> Hashtbl.replace trait_ctor name (d.ptype_name.txt, List.length d.ptype_params)
+       | _ -> raise (Location.Error (Location.error ~loc (Printf.sprintf "trait `%s` declares more than one type constructor" name))));
       let value_sigs = List.filter (fun (si : signature_item) -> match si.psig_desc with Psig_type _ -> false | _ -> true) sigs in
+      (* With a constructor, `fn map of (a -> b) -> a t -> b t` means
+         `val map : ('a -> 'b) -> 'a t -> 'b t`: one polymorphic impl per
+         constructor, so a call site only has to pick the constructor. *)
+      let abstract_types, type_decls, value_sigs =
+        if ctor_decls = [] then abstract_types, type_decls, value_sigs
+        else
+          let typ (m : Ast_mapper.mapper) (t : core_type) =
+            match t.ptyp_desc with
+            | Ptyp_constr ({ txt = Longident.Lident n; _ }, []) when List.mem n abstract_types ->
+              Ast_helper.Typ.var ~loc:t.ptyp_loc n
+            | _ -> Ast_mapper.default_mapper.typ m t
+          in
+          let mapper = { Ast_mapper.default_mapper with typ } in
+          ( [],
+            List.map (fun d -> Ast_helper.Sig.type_ ~loc Recursive [ d ]) ctor_decls,
+            List.map (mapper.signature_item mapper) value_sigs )
+      in
       Hashtbl.replace trait_def name abstract_types;
       [ Ast_helper.Str.modtype ~loc
           (Ast_helper.Mtd.mk (Location.mkloc name loc) ~typ:(Ast_helper.Mty.signature (type_decls @ value_sigs))) ] }
   | IMPL; trait_name = IDENT; OF; ty = IDENT; LBRACE; methods = list(impl_item); RBRACE
       { let loc = mkloc $startpos $endpos in
         let mod_name = String.capitalize_ascii (trait_name ^ "__" ^ ty) in
+        match Hashtbl.find_opt trait_ctor trait_name with
+        | Some (ctor, ctor_arity) -> [ mkctorimpl loc mod_name trait_name ty ctor ctor_arity methods ]
+        | None ->
         let abstract_types =
           match Hashtbl.find_opt trait_def trait_name with
           | Some types -> types

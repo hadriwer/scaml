@@ -18,6 +18,7 @@ let newline = '\n'
 
 rule token = parse
   | whitespace+ { token lexbuf }
+  | "//" [^ '\n']* { token lexbuf }
   | newline { Lexing.new_line lexbuf; token lexbuf }
   | int as n { INT (int_of_string n) }
   | float as f { FLOAT f } (* Ast helper take a string and not a float *)
