@@ -450,7 +450,7 @@ expr:
     { Ast_helper.Exp.ifthenelse ~loc:(mkloc $startpos $endpos) c t (Some e) }
   | FUN; params = nonempty_list(IDENT); ARROW; e = body
     { mk_fn_expr (mkloc $startpos $endpos) params e }
-  | e = expr_bin { e }
+  | e = tuple { e }
 
 expr_bin:
   | e1 = expr_bin; c = CUSTOM; e2 = expr_bin
@@ -459,15 +459,15 @@ expr_bin:
         let f_ident = mkident (mkloc $startpos(c) $endpos(c)) f_name in
         Ast_helper.Exp.apply ~loc:(mkloc $startpos $endpos) f_ident [(Nolabel, e1); (Nolabel, e2)] 
       }
-  | e = tuple { e }
+  | e = app { e }
 
 tuple:
-  | first = app; COMMA; rest = separated_nonempty_list(COMMA, app)
+  | first = expr_bin; COMMA; rest = separated_nonempty_list(COMMA, expr_bin)
       { 
         let all = first :: rest in
         Ast_helper.Exp.tuple ~loc:(mkloc $startpos $endpos) (List.map (fun e -> (None, e)) all)
       }
-  | e = app { e }
+  | e = expr_bin { e }
   
 indexable:
   | a = indexable; LBRACK; index = expr; RBRACK
@@ -501,7 +501,10 @@ atom:
   | q = QIDENT { mkqident (mkloc $startpos $endpos) q }
   | LPAREN; RPAREN { mkunit (mkloc $startpos $endpos) }
   | LPAREN; c = CUSTOM; RPAREN
-      { let loc = mkloc $startpos $endpos in
+      { 
+        let loc = mkloc $startpos $endpos in
         let f_name = match Hashtbl.find_opt operator_tbl c with Some f -> f | None -> c in
-        mkident loc f_name }
-  | LPAREN; e = expr; RPAREN { e }
+        mkident loc f_name 
+      }
+  | LPAREN; e = expr; RPAREN 
+      { e }
