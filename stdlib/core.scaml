@@ -100,6 +100,18 @@ impl foldable of array {
     fn fold_right { Array.fold_right }
 }
 
+trait mappable {
+    type a b
+    type t of 1
+    fn map of (a -> b) -> a t -> b t
+    fn mapi of (int -> a -> b) -> a t -> b t
+}
+
+impl mappable of array {
+    fn map { Array.map }
+    fn mapi { Array.mapi }
+}
+
 trait sumable {
     type a b
     fn sum of a -> b -> a
