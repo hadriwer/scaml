@@ -253,8 +253,9 @@ let impl_module_name trait_name type_name =
 (* Maps a Types.type_expr back to one of the concrete type names `trait`
    signatures can use (lib/parser.mly's [known_types]), plus -- for a
    parametric type like `array` -- the same classification recursively
-   applied to each of its own type arguments (e.g. `int array` gives
-   `("array", ["int"])`). None if [ty] (or one of its arguments) isn't one
+   applied to each of its own type arguments, kept as a full tree (e.g.
+   `int array array` gives `Ty ("array", [Ty ("array", [Ty ("int", [])])])`,
+   so a nested container's innermost element type isn't lost). None if [ty] (or one of its arguments) isn't one
    of these recognized shapes, in which case that call site is left
    unresolved. [ty] is expanded ([Ctype.expand_head]) first: an impl
    method's own self parameter is now annotated with the impl's own type
@@ -262,7 +263,11 @@ let impl_module_name trait_name type_name =
    and unexpanded that's just an opaque reference to "a" itself, not the
    concrete (or still-abstract-via-a-functor-parameter) shape it's really
    a manifest for. *)
-let rec classify_texpr (env : Env.t) (ty : Types.type_expr) : (string * string list) option =
+type type_tree = Ty of string * type_tree list
+
+let ty_name (Ty (n, _)) = n
+
+let rec classify_texpr (env : Env.t) (ty : Types.type_expr) : type_tree option =
   match Types.get_desc (Ctype.expand_head env ty) with
   | Tconstr (path, args, _) ->
     let name =
@@ -279,7 +284,7 @@ let rec classify_texpr (env : Env.t) (ty : Types.type_expr) : (string * string l
      | None -> None
      | Some n ->
        let classified = List.map (classify_texpr env) args in
-       if List.for_all Option.is_some classified then Some (n, List.map (fun c -> fst (Option.get c)) classified)
+       if List.for_all Option.is_some classified then Some (Ty (n, List.map Option.get classified))
        else None)
   | _ -> None
 
@@ -335,10 +340,14 @@ type concrete_ref =
    its "other" parameter (e.g. `showable of array` recursing `print` on
    elements), a direct reference to an already-existing impl module that
    itself satisfies the needed trait (e.g. `Showable__int`) -- see
-   [upgrade_dict_impls]. *)
+   [upgrade_dict_impls]. That dictionary is itself a functor application
+   when the element type is a container too (e.g. `Showable__array
+   (Showable__int)` for an `int array array`). *)
+type dict_module = Dict of string * dict_module list
+
 type functor_arg =
   | FieldStruct of (string * concrete_ref) list
-  | DictModule of string
+  | DictModule of dict_module
 
 (* Where a trait method call resolves to: a plain module (no "other"
    abstract type, e.g. `Arithm__int`), a functor that needs applying inline
@@ -526,7 +535,7 @@ let harvest_dispatch
                 own `b` argument when it's `X.__elem0__ array`). *)
              let classify_at (a : Typedtree.expression) =
                match classify_texpr a.exp_env a.exp_type with
-               | Some (n, args) -> `Concrete (n, args)
+               | Some (Ty (n, args)) -> `Concrete (n, args)
                | None ->
                  (match Types.get_desc (Ctype.expand_head a.exp_env a.exp_type) with
                   | Tconstr (path, [], _) ->
@@ -557,7 +566,8 @@ let harvest_dispatch
                  scan dispatch_args
              in
              (match self_result with
-              | `Concrete (type_name, arg_type_names) ->
+              | `Concrete (type_name, arg_trees) ->
+                let arg_type_names = List.map ty_name arg_trees in
                 let mod_name = impl_module_name trait_name type_name in
                 let params = all_param_names other_names (List.length arg_type_names) in
                 (* A "free" other name (e.g. `foldable`'s `acc`) isn't part
@@ -580,7 +590,7 @@ let harvest_dispatch
                            (match List.nth_opt dispatch_args i with
                             | Some (arg : Typedtree.expression) ->
                               (match classify_texpr arg.exp_env arg.exp_type with
-                               | Some (tn, _) -> Some (fn, Concrete tn)
+                               | Some (Ty (tn, _)) -> Some (fn, Concrete tn)
                                | None -> None)
                             | None -> None)
                          | None -> None)
@@ -599,9 +609,25 @@ let harvest_dispatch
                        [needed_trait] for its concrete type directly (e.g.
                        `Arithm__int`), instead of an anonymous `struct type
                        ... end` it couldn't actually satisfy. *)
-                    (match full_fields, Hashtbl.find_opt dict_requirements mod_name with
-                     | [ (only_field, Concrete concrete_type) ], Some (dict_field, needed_trait) when dict_field = only_field ->
-                       Some (Functored (mod_name, DictModule (impl_module_name needed_trait concrete_type)))
+                    (* A nested container element (e.g. the `int array` of
+                       an `int array array`) is itself a functor-shaped
+                       impl: apply it, recursively, to the dictionary its
+                       own element needs, rather than passing it bare. *)
+                    let rec dict_of needed_trait (Ty (n, args)) =
+                      let dict_mod = impl_module_name needed_trait n in
+                      let sub_trait =
+                        match Hashtbl.find_opt dict_requirements dict_mod with
+                        | Some (_, t) -> t
+                        | None -> needed_trait
+                      in
+                      Dict (dict_mod, List.map (dict_of sub_trait) args)
+                    in
+                    (match full_fields, Hashtbl.find_opt dict_requirements mod_name, arg_trees with
+                     | [ (only_field, Concrete _) ], Some (dict_field, needed_trait), [ elem_tree ]
+                       when dict_field = only_field ->
+                       Some (Functored (mod_name, DictModule (dict_of needed_trait elem_tree)))
+                     | [ (only_field, Concrete concrete_type) ], Some (dict_field, needed_trait), _ when dict_field = only_field ->
+                       Some (Functored (mod_name, DictModule (Dict (impl_module_name needed_trait concrete_type, []))))
                      | _ -> Some (Functored (mod_name, FieldStruct full_fields)))
                   else Some (Plain mod_name)
                 in
@@ -747,7 +773,14 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
          let fresh = fresh_dispatch_module_name () in
          let functor_arg_mod =
            match arg with
-           | DictModule dict_mod_name -> Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident dict_mod_name) loc)
+           | DictModule dict ->
+             let rec mod_of (Dict (name, args)) =
+               List.fold_left
+                 (fun acc a -> Ast_helper.Mod.apply ~loc acc (mod_of a))
+                 (Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident name) loc))
+                 args
+             in
+             mod_of dict
            | FieldStruct fields ->
              Ast_helper.Mod.structure ~loc
                (List.map
