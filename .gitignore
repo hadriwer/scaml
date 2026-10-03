@@ -1,3 +1,5 @@
 *.cmx
 *.cmi
 _build/
+*.exe
+*.generated.*

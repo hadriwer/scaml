@@ -2,7 +2,7 @@ let scaml_add_int = (+)
 let scaml_min_int = (-)
 let scaml_tim_int = ( * )
 let scaml_div_int = (/)
-let scaml_mod_int = \#mod
+let scaml_mod_int = (mod)
 let scaml_print_string = print_string
 let scaml_print_newline = print_newline
 let scaml_print_int = print_int
@@ -93,7 +93,8 @@ let main () =
   Showable__int.println (a.(0));
   Showable__int.println (fact_opt 24);
   Showable__bool.println
-    ((let module Dispatch_mod_2 =
-        (Comparable__array)(struct type __elem0__ = int end) in
+    ((let
+        module Dispatch_mod_2 =
+          (Comparable__array)(struct type __elem0__ = int end) in
         Dispatch_mod_2.op___9___) a a')
 ;;main ()

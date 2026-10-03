@@ -768,7 +768,8 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
              (Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident mod_name) loc))
              functor_arg_mod
          in
-         Ast_helper.Exp.letmodule ~loc (Location.mkloc (Some fresh) loc) functor_app
+         Ast_helper.Exp.struct_item ~loc
+           (Ast_helper.Str.module_ ~loc (Ast_helper.Mb.mk ~loc (Location.mkloc (Some fresh) loc) functor_app))
            (Ast_helper.Exp.ident ~loc (Location.mkloc (Option.get (Longident.unflatten [ fresh; name ])) loc))
        | None -> e)
     | _ -> Ast_mapper.default_mapper.expr mapper e

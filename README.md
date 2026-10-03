@@ -26,6 +26,10 @@ reuse OCaml's own tooling end to end:
 
 `bin/main.ml` wires all of this together.
 
+## Dependencies
+
+**Need OCaml 5.5**
+
 ## Build & run
 
 ```bash
