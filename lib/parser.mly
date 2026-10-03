@@ -354,26 +354,6 @@ item:
           | last :: rest -> Some last, List.rev rest
           | [] -> None, []
         in
-        (* Not every "other" abstract type is one of [ty]'s own type
-           constructor arguments -- e.g. `foldable { type acc a b }`'s `acc`
-           has nothing to do with `array`'s element type (only `a` does);
-           it's a genuinely free/polymorphic type, resolved at each *call
-           site* from whatever argument actually plays that role there
-           (e.g. the `0` in `fold_left (+) 0 arr`), not from [ty]'s own
-           structure. Convention: the *last* [type_arity ty] "other" names,
-           in declared order, are "tied" to [ty]'s own constructor arguments
-           (e.g. `a`, for `array`, since `b = a array`); anything declared
-           earlier (`acc`) is "free". Both still become functor fields (the
-           impl can't otherwise know what either concretely is) -- only
-           [applied_ty]'s own argument list (what [ty] itself is applied to)
-           excludes the free ones, since they aren't part of its type
-           constructor at all. [ty] itself may still need *more* type
-           parameters than it has tied names for (e.g. `impl showable of
-           array`: the trait has no "other" type at all) -- pad with fresh,
-           trait-invisible names for the remainder. Kept in sync with
-           bin/main.ml's [harvest_dispatch], which reconstructs these exact
-           names positionally to know what to instantiate the functor with
-           at each dispatch call site. *)
         let tied_count = min (type_arity ty) (List.length other_names) in
         let other_count = List.length other_names in
         let free_names = List.filteri (fun i _ -> i < other_count - tied_count) other_names in
@@ -432,25 +412,32 @@ item:
 block:
   | FN; name = IDENT; params = fn_params;
     LBRACE; fbody = block; RBRACE; rest = block
-    { mklocalfn (mkloc $startpos $endpos) name params fbody rest }
+    { 
+      mklocalfn (mkloc $startpos $endpos) name params fbody rest 
+    }
   | OP; name = CUSTOM; params = fn_params;
     LBRACE; fbody = block; RBRACE; rest = block
     {
       let f_name = "op___" ^ (string_of_int !operator_cnt) ^ "___" in
       incr operator_cnt;
       Hashtbl.add operator_tbl name f_name;
-      mklocalfn (mkloc $startpos $endpos) f_name params fbody rest }
+      mklocalfn (mkloc $startpos $endpos) f_name params fbody rest 
+    }
   | LET; x = IDENT; EQ; e1 = expr; SEMICOLON; e2 = block
-    { let loc = mkloc $startpos $endpos in
+    { 
+      let loc = mkloc $startpos $endpos in
       let xloc = mkloc $startpos(x) $endpos(x) in
       Ast_helper.Exp.let_ ~loc Nonrecursive
         [ Ast_helper.Vb.mk (Ast_helper.Pat.var (Location.mkloc x xloc)) e1 ]
-        e2 }
+        e2 
+    }
   | e1 = expr; SEMICOLON; b = block
-    { let loc = mkloc $startpos $endpos in
+    { 
+      let loc = mkloc $startpos $endpos in
       Ast_helper.Exp.sequence ~loc e1 b
     }
-  | e = expr { e }
+  | e = expr; SEMICOLON | e = expr 
+      { e }
 
 body:
   | LBRACE; b = block; RBRACE
