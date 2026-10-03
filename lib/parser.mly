@@ -471,8 +471,18 @@ tuple:
   
 indexable:
   | a = indexable; LBRACK; index = expr; RBRACK
-      { let f_get_array = mkqident (mkloc $startpos $endpos) "Array.get" in
-        Ast_helper.Exp.apply ~loc:(mkloc $startpos $endpos) f_get_array [ (Nolabel, a); (Nolabel, index) ] }
+      { 
+        let indices =
+          match index.pexp_desc with
+            | Pexp_tuple l -> List.map snd l
+            | _ -> [ index ]
+        in
+        let loc = mkloc $startpos $endpos in
+        let f_get_array = mkqident loc "Array.get" in
+        List.fold_left (fun acc i ->
+          Ast_helper.Exp.apply ~loc f_get_array [ (Nolabel, acc); (Nolabel, i) ]
+        ) a indices
+      }
   | a = atom { a }
 
 app:
