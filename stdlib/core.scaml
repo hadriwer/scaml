@@ -56,38 +56,11 @@ impl arithm of float {
     op % { scaml_mod_float }
 }
 
-trait comparable {
-    type a
-    op < of a -> a -> bool
-    op <= of a -> a -> bool
-    op > of a -> a -> bool
-    op >= of a -> a -> bool
-    op == of a -> a -> bool
-}
-
-impl comparable of int {
-    op < { scaml_lt }
-    op <= { scaml_leq }
-    op > { scaml_gt }
-    op >= { scaml_geq }
-    op == { scaml_eq }
-}
-
-impl comparable of float {
-    op < { scaml_lt }
-    op <= { scaml_leq }
-    op > { scaml_gt }
-    op >= { scaml_geq }
-    op == { scaml_eq }
-}
-
-impl comparable of array {
-    op < { scaml_lt }
-    op <= { scaml_leq }
-    op > { scaml_gt }
-    op >= { scaml_geq }
-    op == { scaml_eq }
-}
+op < a b { scaml_lt a b }
+op <= a b { scaml_leq }
+op > a b { scaml_gt a b }
+op >= a b { scaml_geq a b }
+op == a b { scaml_eq a b }
 
 trait iterable {
     type a b
