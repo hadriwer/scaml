@@ -1,0 +1,4 @@
+(executable
+ (public_name SCaml)
+ (name main)
+ (libraries SCaml compiler-libs.common))

@@ -1,0 +1,8 @@
+(library
+ (name SCaml)
+ (libraries compiler-libs.common))
+
+(ocamllex lexer)
+
+(menhir
+ (modules parser))

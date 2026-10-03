@@ -1,0 +1,18 @@
+fn fact_opt n {
+    fn aux acc n {
+        if n <= 0 then acc 
+        else { aux (n*acc) (n-1) }
+    }
+    aux 1 n
+}
+
+fn main {
+    let t = 1, 2;
+    let a = Array.init 10 fact_opt;
+    let a' = Array.init 10 fact_opt;
+    println (sum 0 a);
+    println (fst t);
+    println (a[0]);
+    println (fact_opt 24);
+    println (a == a')
+}

@@ -1,0 +1,84 @@
+# Programme
+
+<program> ::= EOF | <element> | <element> <program>
+
+<element> ::= <function_def> | <macro> | <trait>
+
+# FONCTION
+
+<function> ::= "fn" <function_def> | "op" <function_def>
+
+<function_def> ::= Indent("name") <function_def_param> <body>
+
+<function_def_param> ::= "()" | Indent("name") | Indent("name") <function_def_param>
+ 
+<body> ::= "{" <stmt> "}"
+
+<stmt> ::= <expr> | <expr> ";" <stmt>
+
+<expr> ::= <element> | <closure> | <if> | <application>
+
+<application> ::= <atom> | <atom> <application>
+
+<atom> ::= <atom_primary> <atom_postfix>*
+
+<atom_primary> ::= "()" | int | string | OpRef(op) | CustomSymbol(s) | Indent(n) | <assign> | "(" <expr> ")"
+
+# accès postfixe, chaînable (ex. `a.pos.inner[0]`) : "." pour un champ de
+# struct (nom, pas une expression), "[...]" pour une indexation (expression
+# quelconque). Jamais un début d'atome : `[` seul n'ouvre pas d'expression.
+<atom_postfix> ::= "." Indent(field) | "[" <expr> "]"
+
+<assign> ::= "let" Indent("name") "=" <expr> ";"
+
+# Closure
+
+<closure> ::= "^" <function_def_param> "->" <body_closure>
+
+<body_closure> ::= <body> | <expr>
+
+# If
+
+<if> ::= "if" <application> "then" <body_closure> "else" <body_closure>
+
+# Macro
+
+<macro> ::= "#" <type_macro>
+
+<type_macro> ::= <use_macro> | <primitive_macro>
+
+<use_macro> ::= "use" string
+
+<primitive_macro> ::= "primitive" Ident(n) "of" <type_declaration>
+
+# Type declaration
+
+<type_declaration> ::= <type> | <type> "->" <type_declaration>
+
+<type> ::= "'" Ident(n) | <true_type>
+
+<true_type> ::= int | string | unit | float | bool
+
+##############
+# Trait 
+##############
+
+<trait> ::= <impl_trait> | <def_trait>
+
+# def 
+<impl_trait> ::= "trait" Ident(n) <body_def_trait>
+
+<body_def_trait> ::= "{" <body_trait> "}"
+
+<body_trait> ::= <fun_trait> | <fun_trait> "," <body_trait>
+
+<fun_trait> ::= "op" <fun_def_trait> | "fn" <fun_def_trait>
+
+<fun_def_trait> ::= Ident(n) "of" <type_declaration> | "fn" Ident(n) "of
+
+# impl
+<def_trait> ::= "impl" Ident(n) of <true_type> <body_impl_trait>
+
+<body_impl_trait> ::= "{" <def_body_impl_trait> "}"
+
+<def_body_impl_trait> ::= <function> | <function> <def_body_impl_trait>

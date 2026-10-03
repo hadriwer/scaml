@@ -1,0 +1,139 @@
+#use "stdlib/primitive.ml"
+
+trait showable {
+    type a
+    fn print of a -> unit
+    fn println of a -> unit
+}
+
+impl showable of string {
+    fn print s { scaml_print_string s }
+    fn println s { print s; scaml_print_newline () }
+}
+
+impl showable of int {
+    fn print i { scaml_print_int i }
+    fn println i { print i; scaml_print_newline () }
+}
+
+impl showable of float {
+    fn print f { scaml_print_float f }
+    fn println f { print f; scaml_print_newline () }
+}
+
+impl showable of char {
+    fn print c { scaml_print_char c }
+    fn println c { print c; scaml_print_newline () }
+}
+
+impl showable of bool {
+    fn print b { if b then print "true" else print "false" }
+    fn println b { print b; print_newline () }
+}
+
+trait arithm {
+    type a
+    op + of a -> a -> a
+    op - of a -> a -> a
+    op * of a -> a -> a
+    op / of a -> a -> a
+    op % of a -> a -> a
+}
+
+impl arithm of int {
+    op + { scaml_add_int }
+    op - { scaml_min_int }
+    op * { scaml_tim_int }
+    op / { scaml_div_int }
+    op % { scaml_mod_int }
+}
+
+impl arithm of float {
+    op + { scaml_add_float }
+    op - { scaml_min_float }
+    op * { scaml_tim_float }
+    op / { scaml_div_float }
+    op % { scaml_mod_float }
+}
+
+trait comparable {
+    type a
+    op < of a -> a -> bool
+    op <= of a -> a -> bool
+    op > of a -> a -> bool
+    op >= of a -> a -> bool
+    op == of a -> a -> bool
+}
+
+impl comparable of int {
+    op < { scaml_lt }
+    op <= { scaml_leq }
+    op > { scaml_gt }
+    op >= { scaml_geq }
+    op == { scaml_eq }
+}
+
+impl comparable of float {
+    op < { scaml_lt }
+    op <= { scaml_leq }
+    op > { scaml_gt }
+    op >= { scaml_geq }
+    op == { scaml_eq }
+}
+
+impl comparable of array {
+    op < { scaml_lt }
+    op <= { scaml_leq }
+    op > { scaml_gt }
+    op >= { scaml_geq }
+    op == { scaml_eq }
+}
+
+trait iterable {
+    type a b
+    fn iter of (a -> unit) -> b -> unit
+    fn iteri of (int -> a -> unit) -> b -> unit
+}
+
+impl iterable of array {
+    fn iter { Array.iter }
+    fn iteri { Array.iteri }
+}
+
+impl showable of array {
+    fn print a {
+        let l = Array.length a;
+        print "[| ";
+        iteri (^i e -> { 
+            print e; 
+            if i < (l - 1) 
+            then print ", " 
+            else () 
+        }) a;
+        print " |]"
+    }
+
+    fn println a { print a; print_newline () }
+}
+
+trait foldable {
+    type acc a b
+    fn fold_left of (acc -> a -> acc) -> acc -> b -> acc
+    fn fold_right of (a -> acc -> acc) -> b -> acc -> acc
+}
+
+impl foldable of array {
+    fn fold_left { Array.fold_left }
+    fn fold_right { Array.fold_right }
+}
+
+trait sumable {
+    type a b
+    fn sum of a -> b -> a
+}
+
+impl sumable of array {
+    fn sum acc arr { Array.fold_left (+) acc arr }
+}
+
+op |> f g { g f }

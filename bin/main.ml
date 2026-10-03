@@ -1,0 +1,1079 @@
+(* Pipeline: SCaml source
+   -> Parsetree.structure (our lexer/parser, using OCaml's own AST)
+   -> Typedtree.structure (OCaml's own type-checker, via compiler-libs)
+   -> OCaml source text (OCaml's own pretty-printer, Pprintast)
+   -> a real executable (compiled by ocamlfind/ocamlopt). *)
+
+let loc = Location.none
+
+(* The tiny standard library SCaml programs get for free. *)
+(* let prelude : Parsetree.structure =
+  [ Ast_helper.Str.value ~loc Asttypes.Nonrecursive
+      [ Ast_helper.Vb.mk ~loc
+          (Ast_helper.Pat.var ~loc (Location.mkloc "print" loc))
+          (Ast_helper.Exp.ident ~loc
+             (Location.mkloc (Longident.Lident "print_endline") loc)) ]
+  ] *)
+
+let has_main (structure : Parsetree.structure) =
+  List.exists
+    (fun (item : Parsetree.structure_item) ->
+      match item.pstr_desc with
+      | Pstr_value (_, vbs) ->
+        List.exists
+          (fun (vb : Parsetree.value_binding) ->
+            match vb.pvb_pat.ppat_desc with
+            | Ppat_var { txt = "main"; _ } -> true
+            | _ -> false)
+          vbs
+      | _ -> false)
+    structure
+
+(* The top-level names a structure_item defines (its "address" -- what a
+   reference elsewhere would name to depend on it). *)
+let provided_names (item : Parsetree.structure_item) : string list =
+  match item.pstr_desc with
+  | Pstr_value (_, vbs) ->
+    List.filter_map
+      (fun (vb : Parsetree.value_binding) ->
+        match vb.pvb_pat.ppat_desc with Ppat_var { txt; _ } -> Some txt | _ -> None)
+      vbs
+  | Pstr_module mb -> (match mb.pmb_name.txt with Some n -> [ n ] | None -> [])
+  | Pstr_modtype mtd -> [ mtd.pmtd_name.txt ]
+  | Pstr_type (_, decls) -> List.map (fun (d : Parsetree.type_declaration) -> d.ptype_name.txt) decls
+  | _ -> []
+
+(* Every reference a structure_item's own definition makes -- walking
+   expressions (`Pexp_ident`), module expressions (`Pmod_ident`, e.g.
+   `Iterable__array` in a functor application), module types (`Pmty_ident`,
+   e.g. `arithm` in a `: trait_name` ascription) and type expressions
+   (`Ptyp_constr`, e.g. `array`, or `a` in a `with type` manifest) anywhere
+   inside it. A plain name (`Lident n`) gives `(n, None)`; a qualified one
+   (`Ldot(Lident m, x)`, e.g. `Arithm__int.op___0___`) gives `(m, Some x)`,
+   so callers can tell "depends on the module" from "depends on specifically
+   this member of it". Names matching nothing we track (OCaml's own stdlib,
+   `int`, ...) are harmless noise, simply never found in a lookup table. *)
+let referenced (item : Parsetree.structure_item) : (string * string option) list =
+  let found = ref [] in
+  let add_lid (lid : Longident.t) =
+    match lid with
+    | Longident.Lident n -> found := (n, None) :: !found
+    | Longident.Ldot (m, x) ->
+      (match Longident.flatten m.Location.txt with
+       | head :: _ -> found := (head, Some x.Location.txt) :: !found
+       | [] -> ())
+    | Longident.Lapply _ -> ()
+  in
+  let expr self (e : Parsetree.expression) =
+    (match e.pexp_desc with Pexp_ident { txt; _ } -> add_lid txt | _ -> ());
+    Ast_iterator.default_iterator.expr self e
+  in
+  let module_expr self (me : Parsetree.module_expr) =
+    (match me.pmod_desc with Pmod_ident { txt; _ } -> add_lid txt | _ -> ());
+    Ast_iterator.default_iterator.module_expr self me
+  in
+  let module_type self (mt : Parsetree.module_type) =
+    (match mt.pmty_desc with Pmty_ident { txt; _ } -> add_lid txt | _ -> ());
+    Ast_iterator.default_iterator.module_type self mt
+  in
+  let typ self (t : Parsetree.core_type) =
+    (match t.ptyp_desc with Ptyp_constr ({ txt; _ }, _) -> add_lid txt | _ -> ());
+    Ast_iterator.default_iterator.typ self t
+  in
+  let iterator = { Ast_iterator.default_iterator with expr; module_expr; module_type; typ } in
+  iterator.structure_item iterator item;
+  !found
+
+(* Reachability over a flat list of structure_items (used both at the top
+   level and, recursively, inside a kept module's own body): keeps whatever
+   is transitively needed starting from the items with no name at all (plain
+   top-level expressions -- in particular the entry point, `Pstr_eval (main
+   ())`) plus an explicit extra set of root names (used to seed "this
+   module's externally-used members" when pruning inside a module). Returns
+   the kept items (original order preserved) together with, per item, the
+   (module, member) pairs it referenced -- so a caller can recurse into any
+   kept module using exactly the members its own keepers actually needed. *)
+let reachable (extra_roots : string list) (items : Parsetree.structure_item list) =
+  let indexed = List.mapi (fun i item -> (i, item, provided_names item, referenced item)) items in
+  let provider_of_name : (string, int) Hashtbl.t = Hashtbl.create 64 in
+  List.iter (fun (i, _, provided, _) -> List.iter (fun n -> Hashtbl.replace provider_of_name n i) provided) indexed;
+  let kept = Hashtbl.create 64 in
+  let rec visit i =
+    if not (Hashtbl.mem kept i) then begin
+      Hashtbl.add kept i ();
+      let (_, _, _, refs) = List.nth indexed i in
+      List.iter (fun (n, _) -> match Hashtbl.find_opt provider_of_name n with Some j -> visit j | None -> ()) refs
+    end
+  in
+  List.iter (fun (i, _, provided, _) -> if provided = [] then visit i) indexed;
+  List.iter (fun n -> match Hashtbl.find_opt provider_of_name n with Some j -> visit j | None -> ()) extra_roots;
+  List.filter_map (fun (i, item, _, refs) -> if Hashtbl.mem kept i then Some (item, refs) else None) indexed
+
+(* A kept module's body, pruned to just the members [needed] (collected from
+   every *other* kept item's references to it) plus anything those members
+   themselves need in turn. Any ascription is dropped in the process: it
+   already did its one-time job (verifying, in the full, unpruned structure,
+   that this impl truly satisfies its trait -- see [item]'s IMPL rule in
+   lib/parser.mly) and would otherwise reject the very members we just
+   removed ("val op___0___ is required but not provided"). The abstract
+   types' own manifests (`type a = int`, `type b = a array`, ...), which are
+   what actually keeps them transparent, live in the structure itself and
+   are untouched. If nothing is known to be needed (e.g. the module is used
+   some other way we don't track), the module is left exactly as-is rather
+   than risk pruning something still required. *)
+let rec prune_module_expr (needed : string list) (me : Parsetree.module_expr) : Parsetree.module_expr =
+  match me.pmod_desc with
+  | _ when needed = [] -> me
+  | Pmod_constraint (inner, _) -> prune_module_expr needed inner
+  | Pmod_functor (param, body) -> { me with pmod_desc = Pmod_functor (param, prune_module_expr needed body) }
+  | Pmod_structure items ->
+    let kept = reachable needed items in
+    { me with pmod_desc = Pmod_structure (List.map fst kept) }
+  | _ -> me
+
+(* Keeps only the structure_items transitively reachable from `main`
+   (specifically: the entry point, `Pstr_eval (main ())`), then prunes each
+   kept module down to the members actually used anywhere else in what's
+   kept. Everything unreachable at either level (e.g. a whole unused
+   `Arithm__float`, or just the unused `op___0___`/`op___3___`/`op___4___`
+   inside an `Arithm__int` that IS used) is dropped -- the *whole* stdlib is
+   spliced into *every* program by [load_stdlib], so most of it is normally
+   dead code for any one given SCaml file. Relative order is preserved, so
+   declare-before-use still holds among whatever remains. *)
+let eliminate_dead_code (structure : Parsetree.structure) : Parsetree.structure =
+  let kept = reachable [] structure in
+  let members_of = Hashtbl.create 64 in
+  (* A module referenced *bare* (e.g. passed whole as a functor argument,
+     `Mod.ident "Arithm__int"` for `Sumable__array(Arithm__int)`) needs
+     every one of its members, not just whichever specific ones happen to
+     also be referenced elsewhere by qualified name (e.g. `Arithm__int.
+     op___0___` used directly too) -- pruning down to just those would
+     strip e.g. `type a`, breaking the very module ascription that bare
+     reference relies on ("the type a is required but not provided"). *)
+  let fully_needed = Hashtbl.create 16 in
+  List.iter
+    (fun (_, refs) ->
+      List.iter
+        (function
+          | m, None -> Hashtbl.replace fully_needed m ()
+          | m, Some member -> Hashtbl.replace members_of m (member :: (try Hashtbl.find members_of m with Not_found -> [])))
+        refs)
+    kept;
+  List.map
+    (fun ((item : Parsetree.structure_item), _) ->
+      match item.pstr_desc with
+      | Pstr_module mb ->
+        let needed =
+          match mb.pmb_name.txt with
+          | Some n when Hashtbl.mem fully_needed n -> []
+          | Some n -> (try Hashtbl.find members_of n with Not_found -> [])
+          | None -> []
+        in
+        { item with pstr_desc = Pstr_module { mb with pmb_expr = prune_module_expr needed mb.pmb_expr } }
+      | _ -> item)
+    kept
+
+(* The types known/concrete enough that a trait signature can name them
+   directly (mirrors lib/parser.mly's [known_types]). Any other name in a
+   signature is one of the trait's own abstract placeholders. *)
+let known_type_names = [ "unit"; "int"; "float"; "string"; "bool"; "char" ]
+
+(* When a trait method parameter is itself a function type with one of the
+   trait's abstract placeholders somewhere in its own domain chain (e.g.
+   `iter`'s first parameter `a -> unit`, or `iteri`'s `int -> a -> unit`,
+   where `int` is a real argument -- the index -- and `a` is the one that
+   actually matters here), [param_domains] records that placeholder name
+   *and* how many arrow-levels deep it sits (0 for `iter`'s case, 1 for
+   `iteri`'s) at that position (`None` everywhere else). The level lets
+   [harvest_dispatch] find the right bound variable when a callback
+   *value* is actually passed for that parameter (e.g. `iteri (fun i e ->
+   ...)`: the relevant, dispatch-worthy parameter is `e`, the second one,
+   not `i`) -- used to resolve a *bare* trait-method value passed as such a
+   callback (e.g. `println` in `iter println arr`, which never appears as
+   the head of its own application and so can't be found via
+   [classify_texpr] on real argument expressions the way the outer call's
+   own self type is), and to find a callback's own bound element parameter
+   when scanning its body for further calls (see [scan_callback_body]). A
+   domain naming one of the known concrete types (e.g. `iteri`'s `int`) is
+   skipped over rather than treated as the placeholder of interest. *)
+let fn_param_domain (pty : Parsetree.core_type) : (string * int) option =
+  let rec go (pty : Parsetree.core_type) (level : int) =
+    match pty.ptyp_desc with
+    | Ptyp_arrow (_, dom, rest) ->
+      (match dom.ptyp_desc with
+       | Ptyp_constr ({ txt = Longident.Lident n; _ }, []) when not (List.mem n known_type_names) -> Some (n, level)
+       | _ -> go rest (level + 1))
+    | _ -> None
+  in
+  go pty 0
+
+let rec param_domains (ty : Parsetree.core_type) : (string * int) option list =
+  match ty.ptyp_desc with
+  | Ptyp_arrow (_, t1, t2) -> fn_param_domain t1 :: param_domains t2
+  | _ -> []
+
+let collect_trait_methods (structure : Parsetree.structure) : (string * string * string list * (string * int) option list) list =
+  (* The full params-then-return name chain, e.g. ["a"; "a"; "bool"] for
+     `a -> a -> bool` (length = arity + 1, last = return). The *same* name
+     appearing more than once (like `a` here) means the trait requires
+     those positions to share a type -- which the probe stub must respect,
+     see [mk_probe_stub]. *)
+  let rec type_names (ty : Parsetree.core_type) : string list =
+    match ty.ptyp_desc with
+    | Ptyp_arrow (_, t1, t2) ->
+      let n =
+        match t1.ptyp_desc with
+        | Ptyp_constr ({ txt = Longident.Lident n; _ }, []) -> n
+        | _ -> "_"
+      in
+      n :: type_names t2
+    | Ptyp_constr ({ txt = Longident.Lident n; _ }, []) -> [ n ]
+    | _ -> [ "_" ]
+  in
+  List.concat_map
+    (fun (item : Parsetree.structure_item) ->
+      match item.pstr_desc with
+      | Pstr_modtype { pmtd_name; pmtd_type = Some { pmty_desc = Pmty_signature sigs; _ }; _ } ->
+        List.filter_map
+          (fun (sig_item : Parsetree.signature_item) ->
+            match sig_item.psig_desc with
+            | Psig_value vd ->
+              Some (vd.pval_name.txt, pmtd_name.txt, type_names vd.pval_type, param_domains vd.pval_type)
+            | _ -> None)
+          sigs
+      | _ -> [])
+    structure
+
+(* Same module-name convention as `mkimpl` in lib/parser.mly: capitalize the
+   whole `trait__type` string (only the first character needs to be
+   uppercase for a valid OCaml module name). *)
+let impl_module_name trait_name type_name =
+  String.capitalize_ascii (trait_name ^ "__" ^ type_name)
+
+(* Maps a Types.type_expr back to one of the concrete type names `trait`
+   signatures can use (lib/parser.mly's [known_types]), plus -- for a
+   parametric type like `array` -- the same classification recursively
+   applied to each of its own type arguments (e.g. `int array` gives
+   `("array", ["int"])`). None if [ty] (or one of its arguments) isn't one
+   of these recognized shapes, in which case that call site is left
+   unresolved. [ty] is expanded ([Ctype.expand_head]) first: an impl
+   method's own self parameter is now annotated with the impl's own type
+   name (e.g. `(a : a)`, see [[lib/parser.mly]'s [annotate_self_params]]),
+   and unexpanded that's just an opaque reference to "a" itself, not the
+   concrete (or still-abstract-via-a-functor-parameter) shape it's really
+   a manifest for. *)
+let rec classify_texpr (env : Env.t) (ty : Types.type_expr) : (string * string list) option =
+  match Types.get_desc (Ctype.expand_head env ty) with
+  | Tconstr (path, args, _) ->
+    let name =
+      if Path.same path Predef.path_int then Some "int"
+      else if Path.same path Predef.path_string then Some "string"
+      else if Path.same path Predef.path_float then Some "float"
+      else if Path.same path Predef.path_bool then Some "bool"
+      else if Path.same path Predef.path_char then Some "char"
+      else if Path.same path Predef.path_unit then Some "unit"
+      else if Path.same path Predef.path_array then Some "array"
+      else None
+    in
+    (match name with
+     | None -> None
+     | Some n ->
+       let classified = List.map (classify_texpr env) args in
+       if List.for_all Option.is_some classified then Some (n, List.map (fun c -> fst (Option.get c)) classified)
+       else None)
+  | _ -> None
+
+(* True exactly when [path] is a direct projection of the impl functor
+   parameter every `impl` in lib/parser.mly names "X" (e.g. `X.__elem0__`,
+   `X.a`) -- i.e. [ty] is still abstract because we're looking at it from
+   *inside* the generic impl itself, before it's been instantiated with any
+   particular concrete type. Checked by name, not by tracking the exact
+   [Ident.t] through the walk: impls never nest, so at most one such "X" is
+   ever in scope at a time. *)
+let path_is_x_field (path : Path.t) : string option =
+  match path with
+  | Pdot (Pident id, field) when Ident.name id = "X" -> Some field
+  | _ -> None
+
+(* Every `module type` again (see [collect_trait_methods]): the abstract
+   type names it declares, in order -- the same list [item]'s TRAIT rule in
+   lib/parser.mly computed and used to decide the "self" vs. "other" types
+   for a functor-shaped impl. Re-derived here from the Parsetree rather than
+   shared with the parser, consistent with how [collect_trait_methods]
+   already works. *)
+let collect_trait_abstract_types (structure : Parsetree.structure) : (string, string list) Hashtbl.t =
+  let table = Hashtbl.create 16 in
+  List.iter
+    (fun (item : Parsetree.structure_item) ->
+      match item.pstr_desc with
+      | Pstr_modtype { pmtd_name; pmtd_type = Some { pmty_desc = Pmty_signature sigs; _ }; _ } ->
+        let names =
+          List.concat_map
+            (fun (si : Parsetree.signature_item) ->
+              match si.psig_desc with
+              | Psig_type (_, decls) -> List.map (fun d -> d.Parsetree.ptype_name.txt) decls
+              | _ -> [])
+            sigs
+        in
+        Hashtbl.replace table pmtd_name.txt names
+      | _ -> ())
+    structure;
+  table
+
+(* A functor argument field's value: either a concrete, globally-named type
+   (`Concrete "int"`), or, from *inside* another impl's own generic body, a
+   projection of that impl's own functor parameter (`ViaX "__elem0__"`,
+   i.e. `X.__elem0__`) -- deferred until that enclosing impl itself gets
+   instantiated. *)
+type concrete_ref =
+  | Concrete of string
+  | ViaX of string
+
+(* The argument a functor-shaped impl is applied to at a call site: either a
+   fresh anonymous struct binding each "other" type field (the common
+   case), or, when that impl's body needs *values* (not just a type) from
+   its "other" parameter (e.g. `showable of array` recursing `print` on
+   elements), a direct reference to an already-existing impl module that
+   itself satisfies the needed trait (e.g. `Showable__int`) -- see
+   [upgrade_dict_impls]. *)
+type functor_arg =
+  | FieldStruct of (string * concrete_ref) list
+  | DictModule of string
+
+(* Where a trait method call resolves to: a plain module (no "other"
+   abstract type, e.g. `Arithm__int`), a functor that needs applying inline
+   at this call site (e.g. `Iterable__array` applied to `struct type a =
+   int end`, for `iter` used on an `int array`), or -- only ever recorded
+   from *inside* a generic impl's own body -- a direct projection of that
+   impl's own functor parameter (`println` -> `X.println`, deferred the
+   same way). *)
+type dispatch_target =
+  | Plain of string
+  | Functored of string * functor_arg
+  | ViaDictParam of string
+
+(* Identifies a source span well enough to match the same node between the
+   probe's Typedtree and the original Parsetree (both come from the exact
+   same source text, so positions line up exactly). *)
+let loc_key (loc : Location.t) =
+  (loc.loc_start.pos_fname, loc.loc_start.pos_cnum, loc.loc_end.pos_cnum)
+
+(* Walks the probed Typedtree looking for `Texp_apply` whose function is
+   directly a trait method name (e.g. `+ a b`, `print x`, or the innermost
+   application in a curried multi-arg call). For each one found, reads the
+   inferred type of its first real argument and records, keyed by the
+   location of that method-name identifier, which impl module it resolves
+   to -- e.g. `+` applied to two [int]s records "Arithm__int" at that spot. *)
+let harvest_dispatch
+    (methods : (string * string * string list * (string * int) option list) list)
+    (abstract_types : (string, string list) Hashtbl.t)
+    (typed : Typedtree.structure) =
+  let trait_of_name = Hashtbl.create 16 in
+  let arity_of_name = Hashtbl.create 16 in
+  let domains_of_name = Hashtbl.create 16 in
+  let names_of_name = Hashtbl.create 16 in
+  List.iter
+    (fun (name, trait, names, domains) ->
+      Hashtbl.replace trait_of_name name trait;
+      Hashtbl.replace arity_of_name name (List.length names - 1);
+      Hashtbl.replace domains_of_name name domains;
+      Hashtbl.replace names_of_name name names)
+    methods;
+  let table : (string * int * int, dispatch_target) Hashtbl.t = Hashtbl.create 16 in
+  (* Per generic impl module (keyed by its name, e.g. "Showable__array"):
+     the one padding field of its own functor parameter that some call
+     inside its body needs a *value* from (not just a type), and which
+     trait that call needs it to satisfy -- e.g. `print e` on an array
+     element records ("__elem0__", "showable"). Filled in here, consumed by
+     [upgrade_dict_impls] (which upgrades that impl's functor signature
+     accordingly) and, right below, by this same function's own handling of
+     *external* call sites dispatching to that impl (which must then pass
+     an existing impl module as the functor argument, not a bare struct). *)
+  let dict_requirements : (string, string * string) Hashtbl.t = Hashtbl.create 16 in
+  let other_names_of trait_name =
+    match Hashtbl.find_opt abstract_types trait_name with
+    | Some all -> (match List.rev all with _ :: rest -> List.rev rest | [] -> [])
+    | None -> []
+  in
+  let self_name_of trait_name =
+    match Hashtbl.find_opt abstract_types trait_name with
+    | Some all -> (match List.rev all with last :: _ -> Some last | [] -> None)
+    | None -> None
+  in
+  (* Mirrors lib/parser.mly's IMPL rule exactly: not every "other" abstract
+     type is tied to the concrete type's own constructor arguments (e.g.
+     `foldable { type acc a b }`'s `acc` has nothing to do with `array`'s
+     element type -- only `a`, the *last* one before self, does); only the
+     last [arity] of [other_names] are "tied". [ty] may still need *more*
+     type parameters than it has tied names for -- pad with fresh,
+     trait-invisible names for the remainder, named exactly as
+     lib/parser.mly's IMPL rule names them ("__elem0__", ...), so the two
+     agree on what a functor instantiation here needs to supply. *)
+  let split_other_names other_names arity =
+    let tied_count = min arity (List.length other_names) in
+    let other_count = List.length other_names in
+    let free_names = List.filteri (fun i _ -> i < other_count - tied_count) other_names in
+    let tied_names = List.filteri (fun i _ -> i >= other_count - tied_count) other_names in
+    (free_names, tied_names)
+  in
+  let all_param_names other_names arity =
+    let _free_names, tied_names = split_other_names other_names arity in
+    let pad_count = max 0 (arity - List.length tied_names) in
+    let pad_names = List.init pad_count (fun i -> Printf.sprintf "__elem%d__" (List.length tied_names + i)) in
+    tied_names @ pad_names
+  in
+  (* The impl module currently being walked, if any (e.g. "Showable__array"
+     while inside its `struct ... end`). A dispatch target whose module is
+     *this* one must be left as a plain local reference instead -- from
+     inside its own still-being-defined struct, referring to the module by
+     name is "Unbound module". Any *other* impl's module (already fully
+     defined earlier) is fine to reference qualified, which is exactly what
+     lets e.g. `showable of array`'s `print` call `Showable__string.print`
+     or the generic element's impl for a call like `print "[ "` / `print e`
+     inside its own body. *)
+  let current_impl_module = ref None in
+  let target_is_self mod_name = !current_impl_module = Some mod_name in
+  (* `iter f arr` is curried: `App(App(iter, f), arr)`, i.e. *two* nested
+     Texp_apply nodes each carrying exactly one argument -- so a call site
+     can only be inspected as a whole once all of a method's arguments have
+     been collected by walking back through this chain, not just from the
+     one Texp_apply whose own function happens to be the bare identifier
+     (which, for an arity > 1 method, only ever sees the first argument). *)
+  let rec flatten_apply (e : Typedtree.expression) : Typedtree.expression * Typedtree.expression list =
+    match e.exp_desc with
+    | Texp_apply (f, args) ->
+      let real_args = List.filter_map (function (_, Typedtree.Arg a) -> Some a | _ -> None) args in
+      let head, prior = flatten_apply f in
+      (head, prior @ real_args)
+    | _ -> (e, [])
+  in
+  (* The bound variable and body of the [level]-th parameter of a curried
+     `fun x y .. -> body`-shaped lambda (each parameter a plain, single,
+     irrefutable one; [level] 0 is the first). Matches [param_domains]'s own
+     level for a given trait method parameter, so this finds e.g. `iteri`'s
+     callback's *second* parameter (the element, level 1), not its first
+     (the index, which [fn_param_domain] already skipped over). *)
+  let rec lambda_param_and_body (level : int) (e : Typedtree.expression) : (Ident.t * Typedtree.expression) option =
+    match e.exp_desc with
+    | Texp_function ([ { fp_param; _ } ], Tfunction_body body) ->
+      if level = 0 then Some (fp_param, body) else lambda_param_and_body (level - 1) body
+    | _ -> None
+  in
+  (* For a callback passed to a container-iterating method (e.g. `iter`'s
+     first argument): walks its body for trait-method calls made *directly*
+     on the callback's own bound parameter (e.g. `print e`) -- the element
+     value itself, so, like [`DirectX] above, dispatching it needs a value
+     from the enclosing generic impl's functor parameter, not just a type.
+     Can't be found through probing at all here (the probe's necessarily
+     generic `iter` stub doesn't relate its callback's domain to its
+     container's element type the way the real [Array.iter] does), so this
+     matches the callback's bound [Ident.t] directly instead of inspecting
+     any (nonexistent, at this point) concrete type. *)
+  let scan_callback_body (callback_ident : Ident.t) (field : string) (body : Typedtree.expression) =
+    let expr2 (it2 : Tast_iterator.iterator) (e2 : Typedtree.expression) =
+      (match e2.exp_desc with
+       | Texp_apply _ ->
+         let head2, all_args2 = flatten_apply e2 in
+         (match head2.exp_desc with
+          | Texp_ident (_, lid2, _) ->
+            let name2 = Longident.last lid2.txt in
+            (match Hashtbl.find_opt trait_of_name name2, Hashtbl.find_opt arity_of_name name2 with
+             | Some trait_name2, Some arity2 when arity2 > 0 && List.length all_args2 >= arity2 ->
+               let dispatch_args2 = List.filteri (fun i _ -> i < arity2) all_args2 in
+               let is_callback_var (a : Typedtree.expression) =
+                 match a.exp_desc with
+                 | Texp_ident (Pident id, _, _) -> Ident.same id callback_ident
+                 | _ -> false
+               in
+               if List.exists is_callback_var dispatch_args2 then begin
+                 Hashtbl.replace table (loc_key head2.exp_loc) (ViaDictParam name2);
+                 match !current_impl_module with
+                 | Some mod_name2 -> Hashtbl.replace dict_requirements mod_name2 (field, trait_name2)
+                 | None -> ()
+               end
+             | _ -> ())
+          | _ -> ())
+       | _ -> ());
+      Tast_iterator.default_iterator.expr it2 e2
+    in
+    let it2 = { Tast_iterator.default_iterator with expr = expr2 } in
+    it2.expr it2 body
+  in
+  let expr (iter : Tast_iterator.iterator) (e : Typedtree.expression) =
+    (match e.exp_desc with
+     | Texp_apply _ ->
+       let head, all_args = flatten_apply e in
+       (match head.exp_desc with
+        | Texp_ident (_, lid, _) ->
+          let name = Longident.last lid.txt in
+          (match Hashtbl.find_opt trait_of_name name, Hashtbl.find_opt arity_of_name name with
+           | Some trait_name, Some arity when arity > 0 && List.length all_args >= arity ->
+             let dispatch_args = List.filteri (fun i _ -> i < arity) all_args in
+             let other_names = other_names_of trait_name in
+             (* Not "whichever argument happens to classify" (e.g. for
+                `fold_left (+) 0 arr`, the accumulator `0` classifies as
+                `int` too, and sits *before* the real container `arr` --
+                picking the first classifiable argument would wrongly
+                dispatch on `int`): the self type is a specific, known
+                position in the method's own signature (e.g. `b`, for
+                `fold_left of (acc -> a -> acc) -> acc -> b -> acc`), found
+                via [names_of_name] the same way [collect_trait_methods]
+                built it. Classifies concretely, or, from *inside* another
+                generic impl's own body, as still-abstract via that impl's
+                own functor parameter (see [path_is_x_field]): either
+                directly (`DirectX`, e.g. `print e` on an array element), or
+                wrapped in a known container (`ContainerX`, e.g. `iter`'s
+                own `b` argument when it's `X.__elem0__ array`). *)
+             let classify_at (a : Typedtree.expression) =
+               match classify_texpr a.exp_env a.exp_type with
+               | Some (n, args) -> `Concrete (n, args)
+               | None ->
+                 (match Types.get_desc (Ctype.expand_head a.exp_env a.exp_type) with
+                  | Tconstr (path, [], _) ->
+                    (match path_is_x_field path with Some field -> `DirectX field | None -> `None)
+                  | Tconstr (path, [ arg_ty ], _) when Path.same path Predef.path_array ->
+                    (match Types.get_desc (Ctype.expand_head a.exp_env arg_ty) with
+                     | Tconstr (apath, [], _) ->
+                       (match path_is_x_field apath with Some field -> `ContainerX ("array", field) | None -> `None)
+                     | _ -> `None)
+                  | _ -> `None)
+             in
+             let self_pos =
+               match Hashtbl.find_opt names_of_name name, self_name_of trait_name with
+               | Some names, Some self_name ->
+                 let param_names = List.filteri (fun i _ -> i < arity) names in
+                 let rec idx i = function [] -> None | n :: rest -> if n = self_name then Some i else idx (i + 1) rest in
+                 idx 0 param_names
+               | _ -> None
+             in
+             let self_result =
+               match self_pos with
+               | Some i -> (match List.nth_opt dispatch_args i with Some a -> classify_at a | None -> `None)
+               | None ->
+                 (* No clean self-position found in the signature (shouldn't
+                    normally happen) -- fall back to scanning every
+                    argument, as before. *)
+                 let rec scan = function [] -> `None | a :: rest -> (match classify_at a with `None -> scan rest | r -> r) in
+                 scan dispatch_args
+             in
+             (match self_result with
+              | `Concrete (type_name, arg_type_names) ->
+                let mod_name = impl_module_name trait_name type_name in
+                let params = all_param_names other_names (List.length arg_type_names) in
+                (* A "free" other name (e.g. `foldable`'s `acc`) isn't part
+                   of the self type's own structure, so it can't be
+                   classified from [arg_type_names] the way tied names are
+                   -- it's resolved independently, from whatever argument,
+                   at this exact call, actually plays that role (e.g. the
+                   `0` in `fold_left (+) 0 arr`), found the same way
+                   [self_pos] above found the self argument. *)
+                let free_names, _tied_names = split_other_names other_names (List.length arg_type_names) in
+                let free_values =
+                  List.filter_map
+                    (fun fn ->
+                      match Hashtbl.find_opt names_of_name name with
+                      | Some all_names ->
+                        let param_type_names = List.filteri (fun i _ -> i < arity) all_names in
+                        let rec idx i = function [] -> None | n :: rest -> if n = fn then Some i else idx (i + 1) rest in
+                        (match idx 0 param_type_names with
+                         | Some i ->
+                           (match List.nth_opt dispatch_args i with
+                            | Some (arg : Typedtree.expression) ->
+                              (match classify_texpr arg.exp_env arg.exp_type with
+                               | Some (tn, _) -> Some (fn, Concrete tn)
+                               | None -> None)
+                            | None -> None)
+                         | None -> None)
+                      | None -> None)
+                    free_names
+                in
+                let target =
+                  if params = [] && free_values = [] then Some (Plain mod_name)
+                  else if List.length params = List.length arg_type_names then
+                    let full_fields = free_values @ List.combine params (List.map (fun n -> Concrete n) arg_type_names) in
+                    (* The whole functor argument is itself a dictionary when
+                       it has exactly one field overall (whether that field
+                       is "tied" to the self type, like `sumable`'s `a`, or
+                       pure padding, like `showable of array`'s) and that
+                       field needs one: pass the *existing* impl of
+                       [needed_trait] for its concrete type directly (e.g.
+                       `Arithm__int`), instead of an anonymous `struct type
+                       ... end` it couldn't actually satisfy. *)
+                    (match full_fields, Hashtbl.find_opt dict_requirements mod_name with
+                     | [ (only_field, Concrete concrete_type) ], Some (dict_field, needed_trait) when dict_field = only_field ->
+                       Some (Functored (mod_name, DictModule (impl_module_name needed_trait concrete_type)))
+                     | _ -> Some (Functored (mod_name, FieldStruct full_fields)))
+                  else Some (Plain mod_name)
+                in
+                (match target with
+                 | Some t when not (target_is_self mod_name) -> Hashtbl.replace table (loc_key head.exp_loc) t
+                 | _ -> ());
+                (* A callback argument passed bare (e.g. `println` in `iter
+                   println arr`) never appears as the head of its own
+                   application, so it can't be resolved the way [target]
+                   just was. But if this call's signature says that
+                   argument's type is `<abstract> -> ...`, and we just
+                   resolved that same abstract placeholder to a concrete
+                   type (either as the self type, or as one of the "other"
+                   functor types above), and the actual argument is itself a
+                   bare identifier naming another trait method, dispatch it
+                   directly from that concrete type. *)
+                let self_name = self_name_of trait_name in
+                let concrete_of_abstract =
+                  (match self_name with Some s -> [ (s, type_name) ] | None -> [])
+                  @ List.filter_map (function n, Concrete t -> Some (n, t) | _, ViaX _ -> None) free_values
+                  @ (try List.combine _tied_names arg_type_names with Invalid_argument _ -> [])
+                in
+                (match Hashtbl.find_opt domains_of_name name with
+                 | Some domains ->
+                   List.iteri
+                     (fun i domain ->
+                       match domain, List.nth_opt dispatch_args i with
+                       | Some (abstract_name, _level), Some (arg : Typedtree.expression) ->
+                         (match List.assoc_opt abstract_name concrete_of_abstract, arg.exp_desc with
+                          | Some concrete_type, Texp_ident (_, arg_lid, _) ->
+                            let arg_name = Longident.last arg_lid.txt in
+                            (match Hashtbl.find_opt trait_of_name arg_name with
+                             | Some arg_trait ->
+                               let arg_mod_name = impl_module_name arg_trait concrete_type in
+                               if not (target_is_self arg_mod_name) then
+                                 Hashtbl.replace table (loc_key arg.exp_loc) (Plain arg_mod_name)
+                             | None -> ())
+                          | _ -> ())
+                       | _ -> ())
+                     domains
+                 | None -> ())
+              | `DirectX field ->
+                (* `print e` where [e]'s type is *directly* the enclosing
+                   impl's own abstract padding field: needs a value, not
+                   just a type, so defer straight through that functor
+                   parameter ("X") rather than to any named impl module. *)
+                Hashtbl.replace table (loc_key head.exp_loc) (ViaDictParam name);
+                (match !current_impl_module with
+                 | Some mod_name -> Hashtbl.replace dict_requirements mod_name (field, trait_name)
+                 | None -> ())
+              | `ContainerX (base, field) ->
+                let mod_name = impl_module_name trait_name base in
+                if not (target_is_self mod_name) then
+                  (match all_param_names other_names 1 with
+                   | [ only_field ] ->
+                     Hashtbl.replace table (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaX field) ]))
+                   | _ -> ());
+                (* The container's element type is also `field` -- scan any
+                   callback argument (e.g. `iter`'s first argument) for
+                   trait-method calls made directly on its own bound
+                   element parameter (e.g. `print e`), which probing can't
+                   resolve on its own (see [scan_callback_body]). A callback
+                   passed *bare*, not as a lambda (e.g. `Array.fold_left
+                   (+) acc arr` inside another generic impl, where `(+)`
+                   itself names a trait method), is the same situation as
+                   [`DirectX] above, just one level removed: it too needs a
+                   value from the enclosing impl's own functor parameter. *)
+                (match Hashtbl.find_opt domains_of_name name with
+                 | Some domains ->
+                   List.iteri
+                     (fun i domain ->
+                       match domain, List.nth_opt dispatch_args i with
+                       | Some (_, level), Some (callback_arg : Typedtree.expression) ->
+                         (match lambda_param_and_body level callback_arg with
+                          | Some (callback_ident, body) -> scan_callback_body callback_ident field body
+                          | None ->
+                            (match callback_arg.exp_desc with
+                             | Texp_ident (_, lid2, _) ->
+                               let name2 = Longident.last lid2.txt in
+                               (match Hashtbl.find_opt trait_of_name name2 with
+                                | Some trait_name2 ->
+                                  Hashtbl.replace table (loc_key callback_arg.exp_loc) (ViaDictParam name2);
+                                  (match !current_impl_module with
+                                   | Some mod_name2 -> Hashtbl.replace dict_requirements mod_name2 (field, trait_name2)
+                                   | None -> ())
+                                | None -> ())
+                             | _ -> ()))
+                       | _ -> ())
+                     domains
+                 | None -> ())
+              | `None -> ())
+           | _ -> ())
+        | _ -> ())
+     | _ -> ());
+    Tast_iterator.default_iterator.expr iter e
+  in
+  (* Tracks [current_impl_module] while walking into an `impl`'s module
+     body (always a `Tstr_module` in this language -- nothing else produces
+     one), so [expr] above can tell a self-reference (skip) from a call to
+     some other, already-defined impl (rewrite normally). *)
+  let module_binding (iter : Tast_iterator.iterator) (mb : Typedtree.module_binding) =
+    let prev = !current_impl_module in
+    current_impl_module := mb.mb_name.txt;
+    Tast_iterator.default_iterator.module_binding iter mb;
+    current_impl_module := prev
+  in
+  let iterator = { Tast_iterator.default_iterator with expr; module_binding } in
+  iterator.structure iterator typed;
+  (table, dict_requirements)
+
+let fresh_dispatch_module_counter = ref 0
+
+let fresh_dispatch_module_name () =
+  incr fresh_dispatch_module_counter;
+  Printf.sprintf "Dispatch_mod_%d" !fresh_dispatch_module_counter
+
+(* Rewrites the original Parsetree: every bare identifier whose location was
+   resolved by [harvest_dispatch] becomes a plain qualified reference (`+`
+   -> `Arithm__int.(+)`), a direct projection of the enclosing generic
+   impl's own functor parameter (`println` -> `X.println`, from [ViaDictParam]),
+   or, when the impl is a functor (an "other" abstract type needs a
+   concrete argument per call site, e.g. `iter` on an `int array`), a `let
+   module` binding a fresh name to the functor applied either to a
+   freshly-built `struct type <field> = <concrete-or-X-projection> end`, or
+   (for a [DictModule] target) directly to an existing impl module, then
+   referencing the method through it:
+     `iter` -> `let module M = Iterable__array (struct type a = int end)
+                in M.iter`.
+   Everything else is passed through unchanged. *)
+let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (structure : Parsetree.structure) =
+  let expr (mapper : Ast_mapper.mapper) (e : Parsetree.expression) =
+    match e.pexp_desc with
+    | Pexp_ident { txt = Longident.Lident name; _ } ->
+      (match Hashtbl.find_opt table (loc_key e.pexp_loc) with
+       | Some (Plain mod_name) ->
+         let qualified = Option.get (Longident.unflatten [ mod_name; name ]) in
+         { e with pexp_desc = Pexp_ident (Location.mkloc qualified e.pexp_loc) }
+       | Some (ViaDictParam method_name) ->
+         let qualified = Option.get (Longident.unflatten [ "X"; method_name ]) in
+         { e with pexp_desc = Pexp_ident (Location.mkloc qualified e.pexp_loc) }
+       | Some (Functored (mod_name, arg)) ->
+         let loc = e.pexp_loc in
+         let fresh = fresh_dispatch_module_name () in
+         let functor_arg_mod =
+           match arg with
+           | DictModule dict_mod_name -> Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident dict_mod_name) loc)
+           | FieldStruct fields ->
+             Ast_helper.Mod.structure ~loc
+               (List.map
+                  (fun (field_name, cref) ->
+                    let ty_lid =
+                      match cref with
+                      | Concrete type_name -> Longident.Lident type_name
+                      | ViaX field -> Longident.Ldot (Location.mkloc (Longident.Lident "X") loc, Location.mkloc field loc)
+                    in
+                    Ast_helper.Str.type_ ~loc Asttypes.Recursive
+                      [ Ast_helper.Type.mk ~loc
+                          ~manifest:(Ast_helper.Typ.constr ~loc (Location.mkloc ty_lid loc) [])
+                          (Location.mkloc field_name loc) ])
+                  fields)
+         in
+         let functor_app =
+           Ast_helper.Mod.apply ~loc
+             (Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident mod_name) loc))
+             functor_arg_mod
+         in
+         Ast_helper.Exp.letmodule ~loc (Location.mkloc (Some fresh) loc) functor_app
+           (Ast_helper.Exp.ident ~loc (Location.mkloc (Option.get (Longident.unflatten [ fresh; name ])) loc))
+       | None -> e)
+    | _ -> Ast_mapper.default_mapper.expr mapper e
+  in
+  let mapper = { Ast_mapper.default_mapper with expr } in
+  mapper.structure mapper structure
+
+(* For every impl [harvest_dispatch] found needing a *value*, not just a
+   type, from its functor's padding parameter (e.g. `showable of array`'s
+   `print` recursing on elements, via [ViaDictParam]/[dict_requirements]):
+   upgrades that impl's own functor signature from a bare `sig type <field>
+   end` to the needed trait's module type directly (e.g. `showable`), and
+   renames every `X.<field>` type reference inside its body to `X.<that
+   trait's own self type name>` (e.g. `X.a`) to match what `X` now actually
+   exposes -- this covers both the self type's own manifest (`type a =
+   X.__elem0__ array` -> `type a = X.a array`) and any `X.__elem0__`
+   [rewrite_dispatch] already wrote for a [ContainerX] call inside the same
+   body (e.g. `iter`'s own dispatch). External call sites got the matching
+   half of this already, in [harvest_dispatch]'s `Concrete` case: passing
+   the concrete impl module itself (e.g. `Showable__int`) as the whole
+   functor argument instead of an anonymous struct. *)
+let upgrade_dict_impls
+    (dict_requirements : (string, string * string) Hashtbl.t)
+    (abstract_types : (string, string list) Hashtbl.t)
+    (structure : Parsetree.structure) : Parsetree.structure =
+  if Hashtbl.length dict_requirements = 0 then structure
+  else
+    let self_name_of trait_name =
+      match Hashtbl.find_opt abstract_types trait_name with
+      | Some all -> (match List.rev all with last :: _ -> last | [] -> "a")
+      | None -> "a"
+    in
+    let rename_field old_field new_field =
+      let typ (mapper : Ast_mapper.mapper) (t : Parsetree.core_type) =
+        match t.ptyp_desc with
+        | Ptyp_constr ({ txt = Longident.Ldot ({ txt = Longident.Lident "X"; _ }, { txt = f; _ }); loc }, args) when f = old_field ->
+          { t with
+            ptyp_desc =
+              Ptyp_constr
+                (Location.mkloc (Longident.Ldot (Location.mkloc (Longident.Lident "X") loc, Location.mkloc new_field loc)) loc, args)
+          }
+        | _ -> Ast_mapper.default_mapper.typ mapper t
+      in
+      { Ast_mapper.default_mapper with typ }
+    in
+    let upgrade_item (item : Parsetree.structure_item) =
+      match item.pstr_desc with
+      | Pstr_module ({ pmb_name = { txt = Some mod_name; _ }; pmb_expr; _ } as mb) ->
+        (match Hashtbl.find_opt dict_requirements mod_name, pmb_expr.pmod_desc with
+         | Some (field, needed_trait), Pmod_functor (Named (x_name, _old_sig), body) ->
+           let new_self = self_name_of needed_trait in
+           let mapper = rename_field field new_self in
+           let renamed_body = mapper.Ast_mapper.module_expr mapper body in
+           let new_sig =
+             Ast_helper.Mty.ident ~loc:pmb_expr.pmod_loc (Location.mkloc (Longident.Lident needed_trait) pmb_expr.pmod_loc)
+           in
+           let new_mod_expr = { pmb_expr with pmod_desc = Pmod_functor (Named (x_name, new_sig), renamed_body) } in
+           { item with pstr_desc = Pstr_module { mb with pmb_expr = new_mod_expr } }
+         | _ -> item)
+      | _ -> item
+    in
+    List.map upgrade_item structure
+
+(* A literal value of one of the known concrete types, used as a probe
+   stub's body when the trait signature declares that exact return type
+   (e.g. `unit` for `println`), so the stub's inferred type actually matches
+   instead of always looking like "same type as the first argument". *)
+let literal_of_known_type loc name : Parsetree.expression option =
+  match name with
+  | "unit" -> Some (Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None)
+  | "int" -> Some (Ast_helper.Exp.constant ~loc (Ast_helper.Const.int 0))
+  | "float" -> Some (Ast_helper.Exp.constant ~loc (Ast_helper.Const.float "0."))
+  | "bool" -> Some (Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "false") loc) None)
+  | "string" -> Some (Ast_helper.Exp.constant ~loc (Ast_helper.Const.string ""))
+  | "char" -> Some (Ast_helper.Exp.constant ~loc (Ast_helper.Const.char ' '))
+  | _ -> None
+
+let mkbool_lit loc b =
+  Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident (if b then "true" else "false")) loc) None
+
+(* `if true then v1 else (if true then v2 else v3) ...`: forces every
+   variable in the list to share one type, without needing any of them to
+   actually be booleans (the condition is a fixed `true`). *)
+let unify_same_type loc = function
+  | [] | [ _ ] -> None
+  | first :: rest ->
+    Some (List.fold_left (fun acc v -> Ast_helper.Exp.ifthenelse ~loc (mkbool_lit loc true) acc (Some v)) first rest)
+
+let find_index pred lst =
+  let rec go i = function [] -> None | x :: xs -> if pred x then Some i else go (i + 1) xs in
+  go 0 lst
+
+(* A stub matching a trait method's actual signature shape (`names`, e.g.
+   ["a"; "a"; "bool"] for `a -> a -> bool`), not just its arity: positions
+   sharing the same placeholder name (e.g. both `a`s) are forced, via
+   [unify_same_type], to share a type variable in the stub too -- otherwise
+   nothing would relate their inferred types during the probe typecheck,
+   and a use like `n <= 0` would leave `n`'s type totally unconstrained
+   instead of unifying it with `0`'s (both are the trait's `a`). The return
+   position is a literal when it names a known concrete type (e.g. `()` for
+   `println`, `false` for a comparison), or otherwise the parameter sharing
+   its placeholder name (so the return type is unified with that group too),
+   or the first parameter as a last-resort fallback. *)
+let mk_probe_stub loc (names : string list) : Parsetree.expression =
+  if List.length names <= 1 then Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None
+  else
+    let arity = List.length names - 1 in
+    let param_names = List.filteri (fun i _ -> i < arity) names in
+    let return_name = List.nth names arity in
+    let params = List.mapi (fun i _ -> Printf.sprintf "probe_arg%d" i) param_names in
+    let var i = Ast_helper.Exp.ident ~loc (Location.mkloc (Longident.Lident (List.nth params i)) loc) in
+    let groups = Hashtbl.create 8 in
+    List.iteri
+      (fun i n ->
+        if not (List.mem n known_type_names) then
+          Hashtbl.replace groups n (i :: (try Hashtbl.find groups n with Not_found -> [])))
+      param_names;
+    let unify_exprs =
+      Hashtbl.fold
+        (fun _ idxs acc ->
+          match unify_same_type loc (List.map var idxs) with
+          | Some e ->
+            Ast_helper.Exp.apply ~loc
+              (Ast_helper.Exp.ident ~loc (Location.mkloc (Longident.Lident "ignore") loc))
+              [ (Asttypes.Nolabel, e) ]
+            :: acc
+          | None -> acc)
+        groups []
+    in
+    let return_expr =
+      match literal_of_known_type loc return_name with
+      | Some lit -> lit
+      | None ->
+        (match find_index (fun n -> n = return_name) param_names with
+         | Some i -> var i
+         | None -> if params = [] then Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None else var 0)
+    in
+    let body = List.fold_right (fun u acc -> Ast_helper.Exp.sequence ~loc u acc) unify_exprs return_expr in
+    List.fold_right
+      (fun p acc ->
+        Ast_helper.Exp.function_ ~loc
+          [ { Parsetree.pparam_loc = loc;
+              pparam_desc = Parsetree.Pparam_val (Asttypes.Nolabel, None, Ast_helper.Pat.var (Location.mkloc p loc)) } ]
+          None (Parsetree.Pfunction_body acc))
+      params body
+
+let build_probe_prelude (methods : (string * string * string list * (string * int) option list) list) : Parsetree.structure =
+  List.map
+    (fun (name, _trait, names, _domains) ->
+      Ast_helper.Str.value ~loc Asttypes.Nonrecursive
+        [ Ast_helper.Vb.mk ~loc (Ast_helper.Pat.var ~loc (Location.mkloc name loc)) (mk_probe_stub loc names) ])
+    methods
+
+let entry_point : Parsetree.structure_item =
+  Ast_helper.Str.eval ~loc
+    (Ast_helper.Exp.apply ~loc
+       (Ast_helper.Exp.ident ~loc (Location.mkloc (Longident.Lident "main") loc))
+       [ (Asttypes.Nolabel,
+          Ast_helper.Exp.construct ~loc
+            (Location.mkloc (Longident.Lident "()") loc)
+            None) ])
+
+(* Runs the probe typecheck and hands back the resulting Typedtree.structure,
+   to be walked by [harvest_dispatch]. *)
+let probe_typecheck env (methods : (string * string * string list * (string * int) option list) list) (user_structure : Parsetree.structure) : Typedtree.structure =
+  let probe_structure = build_probe_prelude methods @ user_structure @ [ entry_point ] in
+  match Typemod.type_structure env probe_structure with
+  | (typedtree, _, _, _, _) -> typedtree
+  | exception exn ->
+    Location.report_exception Format.err_formatter exn;
+    exit 1
+
+let open_lexbuf filename =
+  let ic = open_in filename in
+  let lexbuf = Lexing.from_channel ic in
+  Lexing.set_filename lexbuf filename;
+  (ic, lexbuf)
+
+(* Parses one .scaml file with our own lexer/parser, with the same error
+   reporting as the top-level file (syntax errors via Location, lexing
+   crashes dumping the tokens seen so far). Shared by the user's own file
+   and every stdlib file [load_stdlib] pulls in below. *)
+let parse_scaml_file (filename : string) : Parsetree.structure =
+  let ic, lexbuf = open_lexbuf filename in
+  let structure =
+    try SCaml.Parser.program SCaml.Lexer.token lexbuf
+    with
+    | SCaml.Parser.Error ->
+      close_in ic;
+      let err_loc =
+        { Location.loc_start = lexbuf.Lexing.lex_start_p;
+          loc_end = lexbuf.Lexing.lex_curr_p;
+          loc_ghost = false }
+      in
+      let lexeme = Lexing.lexeme lexbuf in
+      let what = if lexeme = "" then "end of file" else Printf.sprintf "%S" lexeme in
+      Location.print_report Format.err_formatter
+        (Location.error ~loc:err_loc (Printf.sprintf "Syntax error: unexpected %s" what));
+      exit 1
+    | SCaml.Lexer.Lex_error msg ->
+      close_in ic;
+      Printf.eprintf "-- tokens lexed before the crash --\n%!";
+      SCaml.Token_debug.dump_until_crash filename;
+      Printf.eprintf "%s: lexing error: %s\n%!" filename msg;
+      exit 1
+    | exn ->
+      (* Covers `#use "path"` failures (bad path, or bad OCaml syntax). *)
+      close_in ic;
+      Location.report_exception Format.err_formatter exn;
+      exit 1
+  in
+  close_in ic;
+  structure
+
+(* Every `.scaml` file directly under stdlib/ is compiled into every
+   program automatically, so its `fn`/`op`/`trait`/`impl` are always
+   available with no explicit `#use`. Sorted for a deterministic build. *)
+let stdlib_dir = "stdlib"
+
+let load_stdlib () : Parsetree.structure =
+  if Sys.file_exists stdlib_dir && Sys.is_directory stdlib_dir then
+    Sys.readdir stdlib_dir
+    |> Array.to_list
+    |> List.filter (fun f -> Filename.check_suffix f ".scaml")
+    |> List.sort compare
+    |> List.concat_map (fun f -> parse_scaml_file (Filename.concat stdlib_dir f))
+  else []
+
+let () =
+  let args = List.tl (Array.to_list Sys.argv) in
+  let verbose = List.mem "--verbose" args || List.mem "-v" args in
+  let tokens_mode = List.mem "--tokens" args in
+  let positional = List.filter (fun a -> String.length a = 0 || a.[0] <> '-') args in
+  match tokens_mode, positional with
+  | true, [ filename ] ->
+    let ic, lexbuf = open_lexbuf filename in
+    (try SCaml.Token_debug.print_tokens lexbuf
+     with SCaml.Lexer.Lex_error msg ->
+       close_in ic;
+       Printf.eprintf "%s: lexing error: %s\n" filename msg;
+       exit 1);
+    close_in ic
+  | false, [ filename ] ->
+    (* Order matters and must be explicit: OCaml doesn't guarantee argument
+       evaluation order, and `lib/parser.mly`'s operator_tbl/trait_def are
+       global mutable state shared across parser calls in this process --
+       stdlib must finish parsing (registering every trait's operators)
+       *before* the user's own file is parsed, or the user's file's own
+       `+`/`-`/... would fall back to plain OCaml's native (monomorphic)
+       operators instead of the trait-dispatched ones. *)
+    let stdlib_structure = load_stdlib () in
+    let user_file_structure = parse_scaml_file filename in
+    let user_structure = stdlib_structure @ user_file_structure in
+
+    if not (has_main user_structure) then begin
+      Printf.eprintf "%s: missing entry point (expected `fn main() { ... }`)\n" filename;
+      exit 1
+    end;
+    Compmisc.init_path ();
+    let env = Compmisc.initial_env () in
+
+    (* Probe typecheck + rewrite modules in ast + ocaml typecheck*)
+    let trait_methods = collect_trait_methods user_structure in
+    let user_structure =
+      if trait_methods = [] then user_structure
+      else begin
+        let typed_probe = probe_typecheck env trait_methods user_structure in
+        let abstract_types = collect_trait_abstract_types user_structure in
+        let dispatch_table, dict_requirements = harvest_dispatch trait_methods abstract_types typed_probe in
+        rewrite_dispatch dispatch_table user_structure |> upgrade_dict_impls dict_requirements abstract_types
+      end
+    in
+    let full_structure = (* prelude @ *) user_structure @ [ entry_point ] in
+
+    (try ignore (Typemod.type_structure env full_structure)
+     with exn ->
+       Location.report_exception Format.err_formatter exn;
+       exit 1);
+    if verbose then print_endline "Typecheck OK";
+
+    (* Only after the full structure (stdlib included) has been type-checked
+       as a whole -- trimming first could silently hide a real error in
+       something unused. Pruning here only ever drops siblings nothing kept
+       depends on, so it can't change whether what remains still type-checks. *)
+    let full_structure = eliminate_dead_code full_structure in
+
+    let ocaml_src = Format.asprintf "%a" Pprintast.structure full_structure in
+    if verbose then Printf.printf "Generated OCaml:\n%s\n" ocaml_src;
+
+    let base = Filename.remove_extension filename in
+    let ml_file = base ^ ".generated.ml" in
+    let exe_file = base ^ ".exe" in
+    let oc = open_out ml_file in
+    output_string oc ocaml_src;
+    close_out oc;
+
+    let cmd =
+      Printf.sprintf "ocamlfind ocamlopt %s -o %s"
+        (Filename.quote ml_file) (Filename.quote exe_file)
+    in
+    (match Sys.command cmd with
+     | 0 -> Printf.printf "Compiled -> %s\n" exe_file
+     | code ->
+       Printf.eprintf "ocamlfind ocamlopt failed (exit %d)\n" code;
+       exit 1)
+  | _ ->
+    Printf.eprintf "Usage: %s [--tokens] [--verbose|-v] <file.scaml>\n" Sys.argv.(0);
+    exit 1
