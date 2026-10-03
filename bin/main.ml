@@ -288,6 +288,49 @@ let rec classify_texpr (env : Env.t) (ty : Types.type_expr) : type_tree option =
        else None)
   | _ -> None
 
+(* An arrow's domain comes wrapped as a monomorphic [Tpoly (t, [])];
+   unwrap it so [classify_texpr] sees [t]. *)
+let strip_tpoly (ty : Types.type_expr) =
+  match Types.get_desc ty with Tpoly (t, []) -> t | _ -> ty
+
+(* A trait method whose trait declares a type constructor (`type t of 1`):
+   its trait, that constructor's name and the method's full declared type
+   (polymorphic in everything but the constructor, e.g. `('a -> 'b) -> 'a
+   t -> 'b t`). *)
+type ctor_method = {
+  cm_trait : string;
+  cm_ctor : string;
+  cm_sig : Parsetree.core_type;
+}
+
+let collect_ctor_methods (structure : Parsetree.structure) : (string, ctor_method) Hashtbl.t =
+  let table = Hashtbl.create 16 in
+  List.iter
+    (fun (item : Parsetree.structure_item) ->
+      match item.pstr_desc with
+      | Pstr_modtype { pmtd_name; pmtd_type = Some { pmty_desc = Pmty_signature sigs; _ }; _ } ->
+        let decls =
+          List.concat_map
+            (fun (si : Parsetree.signature_item) -> match si.psig_desc with Psig_type (_, ds) -> ds | _ -> [])
+            sigs
+        in
+        (match List.partition (fun (d : Parsetree.type_declaration) -> d.ptype_params <> []) decls with
+         | [ ctor ], _ ->
+           List.iter
+             (fun (si : Parsetree.signature_item) ->
+               match si.psig_desc with
+               | Psig_value vd ->
+                 Hashtbl.replace table vd.pval_name.txt
+                   { cm_trait = pmtd_name.txt;
+                     cm_ctor = ctor.ptype_name.txt;
+                     cm_sig = vd.pval_type }
+               | _ -> ())
+             sigs
+         | _ -> ())
+      | _ -> ())
+    structure;
+  table
+
 (* True exactly when [path] is a direct projection of the impl functor
    parameter every `impl` in lib/parser.mly names "X" (e.g. `X.__elem0__`,
    `X.a`) -- i.e. [ty] is still abstract because we're looking at it from
@@ -376,6 +419,8 @@ let loc_key (loc : Location.t) =
 let harvest_dispatch
     (methods : (string * string * string list * (string * int) option list) list)
     (abstract_types : (string, string list) Hashtbl.t)
+    (ctor_methods : (string, ctor_method) Hashtbl.t)
+    (prior_dict_requirements : (string, string * string) Hashtbl.t)
     (typed : Typedtree.structure) =
   let trait_of_name = Hashtbl.create 16 in
   let arity_of_name = Hashtbl.create 16 in
@@ -398,7 +443,13 @@ let harvest_dispatch
      accordingly) and, right below, by this same function's own handling of
      *external* call sites dispatching to that impl (which must then pass
      an existing impl module as the functor argument, not a bare struct). *)
-  let dict_requirements : (string, string * string) Hashtbl.t = Hashtbl.create 16 in
+  let dict_requirements : (string, string * string) Hashtbl.t = Hashtbl.copy prior_dict_requirements in
+  (* First one wins: on a later probe round, an impl's body was already
+     rewritten and upgraded (its `X.__elem0__` renamed to `X.a`), and must
+     not re-record its requirement under that new name. *)
+  let add_dict_requirement mod_name req =
+    if not (Hashtbl.mem dict_requirements mod_name) then Hashtbl.replace dict_requirements mod_name req
+  in
   let other_names_of trait_name =
     match Hashtbl.find_opt abstract_types trait_name with
     | Some all -> (match List.rev all with _ :: rest -> List.rev rest | [] -> [])
@@ -497,7 +548,7 @@ let harvest_dispatch
                if List.exists is_callback_var dispatch_args2 then begin
                  Hashtbl.replace table (loc_key head2.exp_loc) (ViaDictParam name2);
                  match !current_impl_module with
-                 | Some mod_name2 -> Hashtbl.replace dict_requirements mod_name2 (field, trait_name2)
+                 | Some mod_name2 -> add_dict_requirement mod_name2 (field, trait_name2)
                  | None -> ()
                end
              | _ -> ())
@@ -508,6 +559,121 @@ let harvest_dispatch
     let it2 = { Tast_iterator.default_iterator with expr = expr2 } in
     it2.expr it2 body
   in
+  (* Position of [name]'s self-type parameter among its first [arity]
+     parameters (e.g. `b`, the third, for `fold_left of (acc -> a -> acc)
+     -> acc -> b -> acc`), via [names_of_name]. *)
+  let self_pos_of name trait_name arity =
+    match Hashtbl.find_opt names_of_name name, self_name_of trait_name with
+    | Some names, Some self_name ->
+      let param_names = List.filteri (fun i _ -> i < arity) names in
+      let rec idx i = function [] -> None | n :: rest -> if n = self_name then Some i else idx (i + 1) rest in
+      idx 0 param_names
+    | _ -> None
+  in
+  (* Where a call to trait method [name] resolves to, once its self type is
+     known to be concretely [type_name] applied to [arg_trees]. [arg_tys]
+     are the types of the method's first [arity] parameters at this use
+     site (to resolve "free" other names, e.g. `foldable`'s `acc`). Returns
+     the impl module name, those free names' resolutions, and the target. *)
+  let concrete_target name trait_name arity (arg_tys : (Env.t * Types.type_expr) list) type_name arg_trees =
+    let other_names = other_names_of trait_name in
+    let arg_type_names = List.map ty_name arg_trees in
+    let mod_name = impl_module_name trait_name type_name in
+    let params = all_param_names other_names (List.length arg_type_names) in
+    (* A "free" other name (e.g. `foldable`'s `acc`) isn't part
+       of the self type's own structure, so it can't be
+       classified from [arg_type_names] the way tied names are
+       -- it's resolved independently, from whatever argument,
+       at this exact call, actually plays that role (e.g. the
+       `0` in `fold_left (+) 0 arr`), found the same way
+       [self_pos] above found the self argument. *)
+    let free_names, _tied_names = split_other_names other_names (List.length arg_type_names) in
+    let free_values =
+      List.filter_map
+        (fun fn ->
+          match Hashtbl.find_opt names_of_name name with
+          | Some all_names ->
+            let param_type_names = List.filteri (fun i _ -> i < arity) all_names in
+            let rec idx i = function [] -> None | n :: rest -> if n = fn then Some i else idx (i + 1) rest in
+            (match idx 0 param_type_names with
+             | Some i ->
+               (match List.nth_opt arg_tys i with
+                | Some (arg_env, arg_ty) ->
+                  (match classify_texpr arg_env arg_ty with
+                   | Some (Ty (tn, _)) -> Some (fn, Concrete tn)
+                   | None -> None)
+                | None -> None)
+             | None -> None)
+          | None -> None)
+        free_names
+    in
+    let target =
+      if params = [] && free_values = [] then Some (Plain mod_name)
+      else if List.length params = List.length arg_type_names then
+        let full_fields = free_values @ List.combine params (List.map (fun n -> Concrete n) arg_type_names) in
+        (* The whole functor argument is itself a dictionary when
+           it has exactly one field overall (whether that field
+           is "tied" to the self type, like `sumable`'s `a`, or
+           pure padding, like `showable of array`'s) and that
+           field needs one: pass the *existing* impl of
+           [needed_trait] for its concrete type directly (e.g.
+           `Arithm__int`), instead of an anonymous `struct type
+           ... end` it couldn't actually satisfy. *)
+        (* A nested container element (e.g. the `int array` of
+           an `int array array`) is itself a functor-shaped
+           impl: apply it, recursively, to the dictionary its
+           own element needs, rather than passing it bare. *)
+        let rec dict_of needed_trait (Ty (n, args)) =
+          let dict_mod = impl_module_name needed_trait n in
+          let sub_trait =
+            match Hashtbl.find_opt dict_requirements dict_mod with
+            | Some (_, t) -> t
+            | None -> needed_trait
+          in
+          Dict (dict_mod, List.map (dict_of sub_trait) args)
+        in
+        (match full_fields, Hashtbl.find_opt dict_requirements mod_name, arg_trees with
+         | [ (only_field, Concrete _) ], Some (dict_field, needed_trait), [ elem_tree ]
+           when dict_field = only_field ->
+           Some (Functored (mod_name, DictModule (dict_of needed_trait elem_tree)))
+         | [ (only_field, Concrete concrete_type) ], Some (dict_field, needed_trait), _ when dict_field = only_field ->
+           Some (Functored (mod_name, DictModule (Dict (impl_module_name needed_trait concrete_type, []))))
+         | _ -> Some (Functored (mod_name, FieldStruct full_fields)))
+      else Some (Plain mod_name)
+    in
+    (mod_name, free_values, target)
+  in
+  (* A call to a constructor-trait method (e.g. `map`, from `mappable`'s
+     `('a -> 'b) -> 'a t -> 'b t`): finds, among the actual parameter types
+     at this use site ([arg_tys]), the one matching a `... t` position in
+     the declared signature, and dispatches to that constructor's impl
+     (e.g. `int array` -> `Mappable__array`). *)
+  let resolve_ctor (cm : ctor_method) (arg_tys : (Env.t * Types.type_expr) list) : dispatch_target option =
+    let found = ref None in
+    let rec go env (s : Parsetree.core_type) ty =
+      let ty = Ctype.expand_head env (strip_tpoly ty) in
+      match s.ptyp_desc, Types.get_desc ty with
+      | Ptyp_arrow (_, s1, s2), Tarrow (_, t1, t2, _) -> go env s1 t1; go env s2 t2
+      | Ptyp_constr ({ txt = Longident.Lident c; _ }, sargs), Tconstr (path, targs, _)
+        when c = cm.cm_ctor && List.length sargs = List.length targs && !found = None ->
+        (* Only the constructor matters, so classify it with its arguments
+           replaced by `int` -- they may well still be unknown here. *)
+        (match classify_texpr env (Ctype.newconstr path (List.map (fun _ -> Predef.type_int) targs)) with
+         | Some (Ty (n, _)) -> found := Some n
+         | None -> ())
+      | _ -> ()
+    in
+    let rec sig_params n (s : Parsetree.core_type) =
+      if n = 0 then [] else match s.ptyp_desc with Ptyp_arrow (_, s1, s2) -> s1 :: sig_params (n - 1) s2 | _ -> []
+    in
+    let sparams = sig_params (List.length arg_tys) cm.cm_sig in
+    if List.length sparams = List.length arg_tys then List.iter2 (fun s (env, ty) -> go env s ty) sparams arg_tys;
+    match !found with
+    | Some ctor_ty ->
+      let mod_name = impl_module_name cm.cm_trait ctor_ty in
+      if target_is_self mod_name then None else Some (Plain mod_name)
+    | None -> None
+  in
   let expr (iter : Tast_iterator.iterator) (e : Typedtree.expression) =
     (match e.exp_desc with
      | Texp_apply _ ->
@@ -516,6 +682,12 @@ let harvest_dispatch
         | Texp_ident (_, lid, _) ->
           let name = Longident.last lid.txt in
           (match Hashtbl.find_opt trait_of_name name, Hashtbl.find_opt arity_of_name name with
+           | Some _, Some arity when arity > 0 && List.length all_args >= arity && Hashtbl.mem ctor_methods name ->
+             let dispatch_args = List.filteri (fun i _ -> i < arity) all_args in
+             let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) dispatch_args in
+             (match resolve_ctor (Hashtbl.find ctor_methods name) arg_tys with
+              | Some t -> Hashtbl.replace table (loc_key head.exp_loc) t
+              | None -> ())
            | Some trait_name, Some arity when arity > 0 && List.length all_args >= arity ->
              let dispatch_args = List.filteri (fun i _ -> i < arity) all_args in
              let other_names = other_names_of trait_name in
@@ -547,14 +719,7 @@ let harvest_dispatch
                      | _ -> `None)
                   | _ -> `None)
              in
-             let self_pos =
-               match Hashtbl.find_opt names_of_name name, self_name_of trait_name with
-               | Some names, Some self_name ->
-                 let param_names = List.filteri (fun i _ -> i < arity) names in
-                 let rec idx i = function [] -> None | n :: rest -> if n = self_name then Some i else idx (i + 1) rest in
-                 idx 0 param_names
-               | _ -> None
-             in
+             let self_pos = self_pos_of name trait_name arity in
              let self_result =
                match self_pos with
                | Some i -> (match List.nth_opt dispatch_args i with Some a -> classify_at a | None -> `None)
@@ -567,70 +732,8 @@ let harvest_dispatch
              in
              (match self_result with
               | `Concrete (type_name, arg_trees) ->
-                let arg_type_names = List.map ty_name arg_trees in
-                let mod_name = impl_module_name trait_name type_name in
-                let params = all_param_names other_names (List.length arg_type_names) in
-                (* A "free" other name (e.g. `foldable`'s `acc`) isn't part
-                   of the self type's own structure, so it can't be
-                   classified from [arg_type_names] the way tied names are
-                   -- it's resolved independently, from whatever argument,
-                   at this exact call, actually plays that role (e.g. the
-                   `0` in `fold_left (+) 0 arr`), found the same way
-                   [self_pos] above found the self argument. *)
-                let free_names, _tied_names = split_other_names other_names (List.length arg_type_names) in
-                let free_values =
-                  List.filter_map
-                    (fun fn ->
-                      match Hashtbl.find_opt names_of_name name with
-                      | Some all_names ->
-                        let param_type_names = List.filteri (fun i _ -> i < arity) all_names in
-                        let rec idx i = function [] -> None | n :: rest -> if n = fn then Some i else idx (i + 1) rest in
-                        (match idx 0 param_type_names with
-                         | Some i ->
-                           (match List.nth_opt dispatch_args i with
-                            | Some (arg : Typedtree.expression) ->
-                              (match classify_texpr arg.exp_env arg.exp_type with
-                               | Some (Ty (tn, _)) -> Some (fn, Concrete tn)
-                               | None -> None)
-                            | None -> None)
-                         | None -> None)
-                      | None -> None)
-                    free_names
-                in
-                let target =
-                  if params = [] && free_values = [] then Some (Plain mod_name)
-                  else if List.length params = List.length arg_type_names then
-                    let full_fields = free_values @ List.combine params (List.map (fun n -> Concrete n) arg_type_names) in
-                    (* The whole functor argument is itself a dictionary when
-                       it has exactly one field overall (whether that field
-                       is "tied" to the self type, like `sumable`'s `a`, or
-                       pure padding, like `showable of array`'s) and that
-                       field needs one: pass the *existing* impl of
-                       [needed_trait] for its concrete type directly (e.g.
-                       `Arithm__int`), instead of an anonymous `struct type
-                       ... end` it couldn't actually satisfy. *)
-                    (* A nested container element (e.g. the `int array` of
-                       an `int array array`) is itself a functor-shaped
-                       impl: apply it, recursively, to the dictionary its
-                       own element needs, rather than passing it bare. *)
-                    let rec dict_of needed_trait (Ty (n, args)) =
-                      let dict_mod = impl_module_name needed_trait n in
-                      let sub_trait =
-                        match Hashtbl.find_opt dict_requirements dict_mod with
-                        | Some (_, t) -> t
-                        | None -> needed_trait
-                      in
-                      Dict (dict_mod, List.map (dict_of sub_trait) args)
-                    in
-                    (match full_fields, Hashtbl.find_opt dict_requirements mod_name, arg_trees with
-                     | [ (only_field, Concrete _) ], Some (dict_field, needed_trait), [ elem_tree ]
-                       when dict_field = only_field ->
-                       Some (Functored (mod_name, DictModule (dict_of needed_trait elem_tree)))
-                     | [ (only_field, Concrete concrete_type) ], Some (dict_field, needed_trait), _ when dict_field = only_field ->
-                       Some (Functored (mod_name, DictModule (Dict (impl_module_name needed_trait concrete_type, []))))
-                     | _ -> Some (Functored (mod_name, FieldStruct full_fields)))
-                  else Some (Plain mod_name)
-                in
+                let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) dispatch_args in
+                let mod_name, free_values, target = concrete_target name trait_name arity arg_tys type_name arg_trees in
                 (match target with
                  | Some t when not (target_is_self mod_name) -> Hashtbl.replace table (loc_key head.exp_loc) t
                  | _ -> ());
@@ -644,6 +747,8 @@ let harvest_dispatch
                    functor types above), and the actual argument is itself a
                    bare identifier naming another trait method, dispatch it
                    directly from that concrete type. *)
+                let arg_type_names = List.map ty_name arg_trees in
+                let _, _tied_names = split_other_names (other_names_of trait_name) (List.length arg_type_names) in
                 let self_name = self_name_of trait_name in
                 let concrete_of_abstract =
                   (match self_name with Some s -> [ (s, type_name) ] | None -> [])
@@ -676,7 +781,7 @@ let harvest_dispatch
                    parameter ("X") rather than to any named impl module. *)
                 Hashtbl.replace table (loc_key head.exp_loc) (ViaDictParam name);
                 (match !current_impl_module with
-                 | Some mod_name -> Hashtbl.replace dict_requirements mod_name (field, trait_name)
+                 | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
                  | None -> ())
               | `ContainerX (base, field) ->
                 let mod_name = impl_module_name trait_name base in
@@ -711,7 +816,7 @@ let harvest_dispatch
                                 | Some trait_name2 ->
                                   Hashtbl.replace table (loc_key callback_arg.exp_loc) (ViaDictParam name2);
                                   (match !current_impl_module with
-                                   | Some mod_name2 -> Hashtbl.replace dict_requirements mod_name2 (field, trait_name2)
+                                   | Some mod_name2 -> add_dict_requirement mod_name2 (field, trait_name2)
                                    | None -> ())
                                 | None -> ())
                              | _ -> ()))
@@ -720,6 +825,42 @@ let harvest_dispatch
                  | None -> ())
               | `None -> ())
            | _ -> ())
+        | _ -> ())
+     (* A trait method used as a bare value, not applied and not a callback
+        of another trait method (e.g. `println` in `x |> println`): no
+        argument to classify, but its own instantiated type at this use site
+        (e.g. `int -> unit`) carries the self type just the same. Visited
+        after its enclosing application, so anything already resolved as a
+        head or callback above is left alone. *)
+     | Texp_ident (_, lid, _) when not (Hashtbl.mem table (loc_key e.exp_loc)) ->
+       let name = Longident.last lid.txt in
+       (match Hashtbl.find_opt trait_of_name name, Hashtbl.find_opt arity_of_name name with
+        | Some trait_name, Some arity when arity > 0 ->
+          let rec param_tys n ty =
+            if n = 0 then []
+            else
+              match Types.get_desc (Ctype.expand_head e.exp_env ty) with
+              | Tarrow (_, t1, t2, _) -> (e.exp_env, strip_tpoly t1) :: param_tys (n - 1) t2
+              | _ -> []
+          in
+          let arg_tys = param_tys arity e.exp_type in
+          (match Hashtbl.find_opt ctor_methods name with
+           | Some cm ->
+             (match resolve_ctor cm arg_tys with
+              | Some t -> Hashtbl.replace table (loc_key e.exp_loc) t
+              | None -> ())
+           | None ->
+             (match self_pos_of name trait_name arity with
+              | Some i when List.length arg_tys = arity ->
+                let env, self_ty = List.nth arg_tys i in
+                (match classify_texpr env self_ty with
+                 | Some (Ty (type_name, arg_trees)) ->
+                   (match concrete_target name trait_name arity arg_tys type_name arg_trees with
+                    | mod_name, _, Some t when not (target_is_self mod_name) ->
+                      Hashtbl.replace table (loc_key e.exp_loc) t
+                    | _ -> ())
+                 | None -> ())
+              | _ -> ()))
         | _ -> ())
      | _ -> ());
     Tast_iterator.default_iterator.expr iter e
@@ -917,7 +1058,7 @@ let mk_probe_stub loc (names : string list) : Parsetree.expression =
     let groups = Hashtbl.create 8 in
     List.iteri
       (fun i n ->
-        if not (List.mem n known_type_names) then
+        if n <> "_" && not (List.mem n known_type_names) then
           Hashtbl.replace groups n (i :: (try Hashtbl.find groups n with Not_found -> [])))
       param_names;
     let unify_exprs =
@@ -935,6 +1076,13 @@ let mk_probe_stub loc (names : string list) : Parsetree.expression =
     let return_expr =
       match literal_of_known_type loc return_name with
       | Some lit -> lit
+      | None when return_name = "_" ->
+        (* A compound return type (e.g. `b t`): nothing to tie it to, so
+           leave it fully polymorphic; the next probe round, once this call
+           is dispatched to a real impl, sees its actual type. *)
+        Ast_helper.Exp.apply ~loc
+          (Ast_helper.Exp.ident ~loc (Location.mkloc (Option.get (Longident.unflatten [ "Obj"; "magic" ])) loc))
+          [ (Asttypes.Nolabel, Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None) ]
       | None ->
         (match find_index (fun n -> n = return_name) param_names with
          | Some i -> var i
@@ -1069,10 +1217,24 @@ let () =
     let user_structure =
       if trait_methods = [] then user_structure
       else begin
-        let typed_probe = probe_typecheck env trait_methods user_structure in
         let abstract_types = collect_trait_abstract_types user_structure in
-        let dispatch_table, dict_requirements = harvest_dispatch trait_methods abstract_types typed_probe in
-        rewrite_dispatch dispatch_table user_structure |> upgrade_dict_impls dict_requirements abstract_types
+        let ctor_methods = collect_ctor_methods user_structure in
+        (* Each round's rewrite gives the next probe real types for what it
+           just dispatched (e.g. `map f m`'s result, an `int array` only
+           once `map` is `Mappable__array.map`), which can unlock calls
+           depending on it (e.g. `|> println`). Stops once a round changes
+           nothing. *)
+        let rec rounds n dict_requirements structure =
+          let typed_probe = probe_typecheck env trait_methods structure in
+          let dispatch_table, dict_requirements =
+            harvest_dispatch trait_methods abstract_types ctor_methods dict_requirements typed_probe
+          in
+          let rewritten =
+            rewrite_dispatch dispatch_table structure |> upgrade_dict_impls dict_requirements abstract_types
+          in
+          if n <= 1 || rewritten = structure then rewritten else rounds (n - 1) dict_requirements rewritten
+        in
+        rounds 4 (Hashtbl.create 16) user_structure
       end
     in
     let full_structure = (* prelude @ *) user_structure @ [ entry_point ] in
