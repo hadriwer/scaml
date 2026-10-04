@@ -61,3 +61,14 @@ Command to show OCaml's own parsing tree for reference:
 ```bash
 ocamlfind ocamlc -dparsetree -c myfile.ml
 ```
+
+## License
+
+SCaml is released under the [MIT License](LICENSE), © 2026 wer.
+
+It builds on OCaml's `compiler-libs` (parser, type-checker, pretty-printer),
+distributed under the GNU LGPL 2.1 with the OCaml special exception on
+linking, which allows distributing the SCaml compiler, and the programs it
+compiles, under terms of one's choice. `reference/ast_helper.ml` is a copy of
+an OCaml source file, kept for reference only: it remains under OCaml's own
+license (see its header), not SCaml's.

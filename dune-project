@@ -9,11 +9,11 @@
 (source
  (github username/reponame))
 
-(authors "Author Name <author@example.com>")
+(authors "wer")
 
-(maintainers "Maintainer Name <maintainer@example.com>")
+(maintainers "wer")
 
-(license LICENSE)
+(license MIT)
 
 (documentation https://url/to/documentation)
 

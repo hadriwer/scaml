@@ -2,9 +2,9 @@
 opam-version: "2.0"
 synopsis: "A short synopsis"
 description: "A longer description"
-maintainer: ["Maintainer Name <maintainer@example.com>"]
-authors: ["Author Name <author@example.com>"]
-license: "LICENSE"
+maintainer: ["wer"]
+authors: ["wer"]
+license: "MIT"
 tags: ["add topics" "to describe" "your" "project"]
 homepage: "https://github.com/username/reponame"
 doc: "https://url/to/documentation"
