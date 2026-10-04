@@ -7,6 +7,8 @@
 open Parsetree
 open Asttypes
 
+exception MyError of string
+
 let operator_cnt = ref 0
 let operator_tbl = Hashtbl.create 97
 
@@ -62,6 +64,11 @@ let mkqident loc txt =
   in
   Ast_helper.Exp.ident ~loc (Location.mkloc lid loc)
 
+let is_capitalized s = s <> "" && s.[0] >= 'A' && s.[0] <= 'Z'
+
+let mkbool_pat loc b =
+  Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident (if b then "true" else "false")) loc) None
+
 let mkbool loc b =
   Ast_helper.Exp.construct ~loc
     (Location.mkloc (Longident.Lident (if b then "true" else "false")) loc)
@@ -76,8 +83,15 @@ let known_types = [ "unit"; "int"; "float"; "string"; "bool"; "char" ]
    `array` needs exactly one (its element type). Everything else here is a
    leaf type with none. Mirrors `classify_texpr` in bin/main.ml, which
    recurses into exactly this many type arguments when classifying a self
-   type at a dispatch call site. *)
-let type_arity name = match name with "array" -> 1 | _ -> 0
+   type at a dispatch call site. A type the program declares with
+   parameters (`type a btree { ... }`) is registered in [user_type_arity]
+   when parsed, so an impl further down sees it like `array`. *)
+let user_type_arity : (string, int) Hashtbl.t = Hashtbl.create 16
+
+let type_arity name =
+  match name with
+  | "array" | "list" -> 1
+  | _ -> Option.value (Hashtbl.find_opt user_type_arity name) ~default:0
 
 (* A name in a trait signature is always a TYPE NAME (concrete, e.g. `unit`,
    or abstract, e.g. `a`) -- never a type variable ['a]. A variable would let
@@ -251,6 +265,49 @@ let mkctorimpl loc mod_name trait_name ty ctor ctor_arity methods =
   in
   Ast_helper.Str.module_ ~loc (Ast_helper.Mb.mk (Location.mkloc (Some mod_name) loc) body)
 
+(* `impl <trait> of <ty1>, <ty2>, ...`: an overload chosen by the types of
+   a method's first parameters (one per listed type), Rust `Mul<Rhs>`-style,
+   instead of a single self type. Each method becomes a plain top-level
+   function whose name records those types, with its parameters annotated
+   accordingly (a parametric type's own arguments left open):
+
+     impl mul of array, int { op * x k { ... } }
+       ~>  let op___N_____ovl__array__int (x : _ array) (k : int) = ...
+
+   bin/main.ml dispatches a call to the overload matching its arguments'
+   types; a body that is generic (e.g. over the array's elements) is then
+   specialized per use by its monomorphization. *)
+let mkoverloadimpl loc trait_name (tys : string list) (methods : structure_item list) =
+  if not (Hashtbl.mem trait_def trait_name) then
+    raise (Location.Error (Location.error ~loc (Printf.sprintf "impl of unknown trait `%s`" trait_name)));
+  let annot ty =
+    Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident ty) loc)
+      (List.init (type_arity ty) (fun _ -> Ast_helper.Typ.any ~loc ()))
+  in
+  let annots = List.map annot tys in
+  let rec annotate annots (e : expression) =
+    match annots, e.pexp_desc with
+    | [], _ -> e
+    | ty :: rest, Pexp_function ([ ({ pparam_desc = Pparam_val (lbl, def, pat); _ } as p) ], c, Pfunction_body body) ->
+      let p' = { p with pparam_desc = Pparam_val (lbl, def, Ast_helper.Pat.constraint_ ~loc:pat.ppat_loc pat ty) } in
+      { e with pexp_desc = Pexp_function ([ p' ], c, Pfunction_body (annotate rest body)) }
+    | _ ->
+      (* Point-free (`op * { scaml_tim_int }`): constrain the whole value. *)
+      let fn_ty = List.fold_right (fun a acc -> Ast_helper.Typ.arrow ~loc Nolabel a acc) annots (Ast_helper.Typ.any ~loc ()) in
+      Ast_helper.Exp.constraint_ ~loc e fn_ty
+  in
+  List.map
+    (fun (item : structure_item) ->
+      match item.pstr_desc with
+      | Pstr_value (rf, [ ({ pvb_pat = { ppat_desc = Ppat_var { txt = name; loc = nloc }; _ } as pat; pvb_expr; _ } as vb) ]) ->
+        let name' = name ^ "__ovl__" ^ String.concat "__" tys in
+        { item with
+          pstr_desc =
+            Pstr_value
+              (rf, [ { vb with pvb_pat = { pat with ppat_desc = Ppat_var (Location.mkloc name' nloc) }; pvb_expr = annotate annots pvb_expr } ]) }
+      | _ -> item)
+    methods
+
 (* [#use "path"]: [path] is plain OCaml (not SCaml), so it's parsed with
    OCaml's own parser (Parse.implementation, the same entry point ocamlopt
    itself uses for a .ml file) rather than our lexer/parser, and its
@@ -274,9 +331,15 @@ let load_used_file loc path : Parsetree.structure =
 %token <string> STRING
 %token LPAREN RPAREN LBRACE RBRACE COMMA SEMICOLON EQ LBRACK RBRACK
 %token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TRAIT IMPL TYPE OF
-%token EOF
+%token EOF DOT BAR MATCH INDEX_LBRACK LBRACKBAR BARRBRACK
 
 %left CUSTOM
+(* `match f x { ... }`: after the scrutinee, a `{` opens the arms rather than
+   a record literal passed as one more argument (as in Rust; write
+   `match f ({ x = 1 }) { ... }` for that). Only the scrutinee position is
+   affected: nowhere else can an expression be followed by `{`. *)
+%nonassoc LBRACE
+%nonassoc below_arms
 
 %start <Parsetree.structure> program
 
@@ -326,6 +389,15 @@ impl_item:
         in
         mkimplmethod loc f_name params body }
 
+(* Inside `impl <trait> of <ty> { ... }`: a method, or the concrete type for
+   one of the trait's other abstract types (`type a = int`), which then
+   stops being a parameter of the impl (e.g. `foldable`'s element type `a`
+   is `int` for a `tree` of ints, while it stays free for `'a array`). *)
+impl_entry:
+  | m = impl_item { `Method m }
+  | TYPE; n = IDENT; EQ; t = type_declaration
+      { `Assoc (Location.mkloc n (mkloc $startpos(n) $endpos(n)), t) }
+
 atom_body_trait_def:
   | OP; n = CUSTOM; OF; t = type_declaration
       {
@@ -333,6 +405,7 @@ atom_body_trait_def:
         let f_name = "op___" ^ (string_of_int !operator_cnt) ^ "___" in
         incr operator_cnt;
         Hashtbl.add operator_tbl n f_name;
+        Op_names.register n f_name;
         Hashtbl.replace method_sig_tbl f_name (trait_type_names t);
         Ast_helper.Sig.value ~loc (make_value loc f_name t)
       }
@@ -347,19 +420,96 @@ atom_body_trait_def:
         Ast_helper.Sig.type_ ~loc Recursive
           [ Ast_helper.Type.mk ~loc ~params:(ctor_params loc arity) (Location.mkloc c loc) ] }
 
+(* The inside of `type name { ... }`: either record fields separated by `;`
+   (`name of string; age of int`) or constructors separated by `|`, with an
+   optional leading `|` (`Leaf | Node of tree, int, tree`). A lone item is
+   told apart by its case: `{ Empty }` is a constructor, `{ x of int }` a
+   field. *)
+body_type:
+  | BAR; items = separated_nonempty_list(BAR, decl_item)
+      { `Variant items }
+  | first = decl_item; BAR; rest = separated_nonempty_list(BAR, decl_item)
+      { `Variant (first :: rest) }
+  | items = separated_nonempty_list(SEMICOLON, decl_item)
+      { `Semi items }
+
+decl_item:
+  | name = IDENT; args = loption(preceded(OF, separated_nonempty_list(COMMA, type_declaration)))
+      { (Location.mkloc name (mkloc $startpos $endpos), args) }
+
 item:
+  (* `type btree { ... }`, or with parameters before the name like OCaml's
+     `'a btree` (without the quote): `type a btree { ... }`. *)
+  | TYPE; ids = nonempty_list(IDENT); LBRACE; b = body_type; RBRACE
+      {
+        let loc = mkloc $startpos $endpos in
+        let name, params = match List.rev ids with n :: ps -> n, List.rev ps | [] -> assert false in
+        let c = { Location.txt = name; loc } in
+        Hashtbl.replace user_type_arity name (List.length params);
+        (* Inside the body, a parameter's name (`a` in `Node of a btree, a`)
+           is that type variable, not a type of that name. *)
+        let mapper =
+          { Ast_mapper.default_mapper with
+            typ = (fun m t ->
+              match t.ptyp_desc with
+              | Ptyp_constr ({ txt = Longident.Lident n; _ }, []) when List.mem n params ->
+                Ast_helper.Typ.var ~loc:t.ptyp_loc n
+              | _ -> Ast_mapper.default_mapper.typ m t) }
+        in
+        let b =
+          match b with
+          | `Variant items -> `Variant (List.map (fun (n, args) -> (n, List.map (mapper.typ mapper) args)) items)
+          | `Semi items -> `Semi (List.map (fun (n, args) -> (n, List.map (mapper.typ mapper) args)) items)
+        in
+        let params = List.map (fun n -> (Ast_helper.Typ.var ~loc n, (Asttypes.NoVariance, Asttypes.NoInjectivity))) params in
+        let is_ctor (n : string Location.loc) = n.txt <> "" && Char.uppercase_ascii n.txt.[0] = n.txt.[0] in
+        let variant items =
+          Ptype_variant
+            (List.map
+               (fun ((n : string Location.loc), args) ->
+                 if not (is_ctor n) then
+                   raise (Location.Error (Location.error ~loc:n.loc
+                     (Printf.sprintf "constructor `%s` must start with an uppercase letter" n.txt)));
+                 Ast_helper.Type.constructor ~loc:n.loc ~args:(Pcstr_tuple args) n)
+               items)
+        in
+        let record items =
+          Ptype_record
+            (List.map
+               (fun ((n : string Location.loc), args) ->
+                 match args with
+                 | [ t ] when not (is_ctor n) -> Ast_helper.Type.field ~loc:n.loc n t
+                 | _ ->
+                   raise (Location.Error (Location.error ~loc:n.loc
+                     (if is_ctor n then Printf.sprintf "constructors are separated by `|`, not `;` (at `%s`)" n.txt
+                      else Printf.sprintf "field `%s` needs exactly one type: `%s of <type>`" n.txt n.txt))))
+               items)
+        in
+        let kind =
+          match b with
+          | `Variant items -> variant items
+          | `Semi ([ (n, _) ] as items) when is_ctor n -> variant items
+          | `Semi items -> record items
+        in
+        [ Ast_helper.Str.type_ Recursive [ Ast_helper.Type.mk ~loc ~params c ~kind ] ]
+      }
   | FN; name = IDENT; params = fn_params;
     LBRACE; body = block; RBRACE
     { [ mkfn (mkloc $startpos $endpos) name params body ] }
   | OP; name = CUSTOM; params = fn_params;
     LBRACE; body = block; RBRACE
     {
+      let l = List.length params in
+      if l <> 2 then raise (MyError ("Operator has exactly to argument. But " ^ (string_of_int l) ^ " were given."));
       let f_name = "op___" ^ (string_of_int !operator_cnt) ^ "___" in
       incr operator_cnt;
       Hashtbl.add operator_tbl name f_name;
+      Op_names.register name f_name;
       [ mkfn (mkloc $startpos $endpos) f_name params body ] }
   | USE; path = STRING
-    { load_used_file (mkloc $startpos $endpos) path }
+    { 
+      load_used_file (mkloc $startpos $endpos) path 
+    }
   | TRAIT; name = IDENT; LBRACE; sigs = list(atom_body_trait_def); RBRACE
     { 
       let loc = mkloc $startpos $endpos in
@@ -416,11 +566,21 @@ item:
       Hashtbl.replace trait_def name abstract_types;
       [ Ast_helper.Str.modtype ~loc
           (Ast_helper.Mtd.mk (Location.mkloc name loc) ~typ:(Ast_helper.Mty.signature (type_decls @ value_sigs))) ] }
-  | IMPL; trait_name = IDENT; OF; ty = IDENT; LBRACE; methods = list(impl_item); RBRACE
+  | IMPL; trait_name = IDENT; OF; ty = IDENT; COMMA; tys = separated_nonempty_list(COMMA, IDENT);
+    LBRACE; methods = list(impl_item); RBRACE
+      { mkoverloadimpl (mkloc $startpos $endpos) trait_name (ty :: tys) methods }
+  | IMPL; trait_name = IDENT; OF; ty = IDENT; LBRACE; entries = list(impl_entry); RBRACE
       { let loc = mkloc $startpos $endpos in
         let mod_name = String.capitalize_ascii (trait_name ^ "__" ^ ty) in
+        let methods = List.filter_map (function `Method m -> Some m | `Assoc _ -> None) entries in
+        let assoc = List.filter_map (function `Assoc (n, t) -> Some (n, t) | `Method _ -> None) entries in
+        let assoc_error ((n : string Location.loc), _) msg = raise (Location.Error (Location.error ~loc:n.loc msg)) in
         match Hashtbl.find_opt trait_ctor trait_name with
-        | Some (ctor, ctor_arity) -> [ mkctorimpl loc mod_name trait_name ty ctor ctor_arity methods ]
+        | Some (ctor, ctor_arity) ->
+          (match assoc with
+           | a :: _ -> assoc_error a (Printf.sprintf "trait `%s` takes no `type ... = ...` in its impls" trait_name)
+           | [] -> ());
+          [ mkctorimpl loc mod_name trait_name ty ctor ctor_arity methods ]
         | None ->
         let abstract_types =
           match Hashtbl.find_opt trait_def trait_name with
@@ -436,6 +596,17 @@ item:
         let other_count = List.length other_names in
         let free_names = List.filteri (fun i _ -> i < other_count - tied_count) other_names in
         let tied_names = List.filteri (fun i _ -> i >= other_count - tied_count) other_names in
+        List.iter
+          (fun ((n : string Location.loc), _ as a) ->
+            if Some n.txt = self_name then
+              assoc_error a (Printf.sprintf "`%s` is `%s` itself in this impl" n.txt ty)
+            else if List.mem n.txt tied_names then
+              assoc_error a (Printf.sprintf "`%s` is already given by `%s`'s own type parameter" n.txt ty)
+            else if not (List.mem n.txt free_names) then
+              assoc_error a (Printf.sprintf "trait `%s` has no abstract type `%s`" trait_name n.txt))
+          assoc;
+        let fixed n = List.find_map (fun ((m : string Location.loc), t) -> if m.txt = n then Some t else None) assoc in
+        let free_names = List.filter (fun n -> fixed n = None) free_names in
         let pad_count = max 0 (type_arity ty - List.length tied_names) in
         let pad_names =
           List.init pad_count (fun i -> Printf.sprintf "__elem%d__" (List.length tied_names + i))
@@ -455,6 +626,7 @@ item:
             (fun n ->
               let manifest =
                 if Some n = self_name then Some (applied_ty ())
+                else if fixed n <> None then fixed n
                 else if List.mem n all_param_names then Some (Ast_helper.Typ.constr ~loc (Location.mkloc (other_ref n) loc) [])
                 else None
               in
@@ -462,7 +634,12 @@ item:
             abstract_types
         in
         let with_constraint n =
-          let manifest = if Some n = self_name then applied_ty () else Ast_helper.Typ.constr ~loc (Location.mkloc (other_ref n) loc) [] in
+          let manifest =
+            if Some n = self_name then applied_ty ()
+            else match fixed n with
+              | Some t -> t
+              | None -> Ast_helper.Typ.constr ~loc (Location.mkloc (other_ref n) loc) []
+          in
           Pwith_type (Location.mkloc (Longident.Lident n) loc, Ast_helper.Type.mk ~loc ~manifest (Location.mkloc n loc))
         in
         let module_type =
@@ -496,9 +673,12 @@ block:
   | OP; name = CUSTOM; params = fn_params;
     LBRACE; fbody = block; RBRACE; rest = block
     {
+      let l = List.length params in
+      if l <> 2 then raise (MyError ("Operator has exactly to argument. But " ^ (string_of_int l) ^ " were given."));
       let f_name = "op___" ^ (string_of_int !operator_cnt) ^ "___" in
       incr operator_cnt;
       Hashtbl.add operator_tbl name f_name;
+      Op_names.register name f_name;
       mklocalfn (mkloc $startpos $endpos) f_name params fbody rest 
     }
   | LET; x = IDENT; EQ; e1 = expr; SEMICOLON; e2 = block
@@ -528,7 +708,56 @@ expr:
     { Ast_helper.Exp.ifthenelse ~loc:(mkloc $startpos $endpos) c t (Some e) }
   | FUN; params = nonempty_list(IDENT); ARROW; e = body
     { mk_fn_expr (mkloc $startpos $endpos) params e }
+  | MATCH; e = expr; LBRACE; option(BAR); cases = separated_nonempty_list(BAR, match_case); RBRACE
+    { Ast_helper.Exp.match_ ~loc:(mkloc $startpos $endpos) e cases }
   | e = tuple { e }
+
+match_case:
+  | p = pattern; ARROW; e = body
+    { Ast_helper.Exp.case p e }
+  (* `match a, b { x, y -> ... }`: a tuple needs no parentheses here, just
+     like the scrutinee itself. *)
+  | first = pattern; COMMA; rest = separated_nonempty_list(COMMA, pattern); ARROW; e = body
+    { let p = Ast_helper.Pat.tuple ~loc:(mkloc $startpos(first) $endpos(rest)) (List.map (fun p -> (None, p)) (first :: rest)) Closed in
+      Ast_helper.Exp.case p e }
+
+(* `Node (l, v, r)`, `Just x`: a constructor applied to one simple pattern
+   (a tuple for several arguments, as in expressions). *)
+pattern:
+  | c = IDENT; arg = simple_pattern
+    { let loc = mkloc $startpos $endpos in
+      if not (is_capitalized c) then
+        raise (Location.Error (Location.error ~loc
+          (Printf.sprintf "only a constructor can take an argument in a pattern, not `%s`" c)));
+      Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident c) (mkloc $startpos(c) $endpos(c))) (Some ([], arg)) }
+  | p = simple_pattern { p }
+
+simple_pattern:
+  | x = IDENT
+    { let loc = mkloc $startpos $endpos in
+      if x = "_" then Ast_helper.Pat.any ~loc ()
+      else if is_capitalized x then Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident x) loc) None
+      else Ast_helper.Pat.var ~loc (Location.mkloc x loc) }
+  | n = INT { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.int n) }
+  | s = STRING { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.string s) }
+  | c = CHAR { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.char c) }
+  | TRUE { mkbool_pat (mkloc $startpos $endpos) true }
+  | FALSE { mkbool_pat (mkloc $startpos $endpos) false }
+  | LPAREN; RPAREN
+    { let loc = mkloc $startpos $endpos in
+      Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None }
+  | LPAREN; p = pattern; RPAREN { p }
+  | LPAREN; first = pattern; COMMA; rest = separated_nonempty_list(COMMA, pattern); RPAREN
+    { Ast_helper.Pat.tuple ~loc:(mkloc $startpos $endpos) (List.map (fun p -> (None, p)) (first :: rest)) Closed }
+  (* `{ name = n; age }`: a field alone binds a variable of the same name. *)
+  | LBRACE; fields = separated_nonempty_list(SEMICOLON, field_pattern); RBRACE
+    { Ast_helper.Pat.record ~loc:(mkloc $startpos $endpos) fields Open }
+
+field_pattern:
+  | f = IDENT; p = option(preceded(EQ, pattern))
+    { let floc = mkloc $startpos(f) $endpos(f) in
+      let p = match p with Some p -> p | None -> Ast_helper.Pat.var ~loc:floc (Location.mkloc f floc) in
+      (Location.mkloc (Longident.Lident f) floc, p) }
 
 expr_bin:
   | e1 = expr_bin; c = CUSTOM; e2 = expr_bin
@@ -537,7 +766,7 @@ expr_bin:
         let f_ident = mkident (mkloc $startpos(c) $endpos(c)) f_name in
         Ast_helper.Exp.apply ~loc:(mkloc $startpos $endpos) f_ident [(Nolabel, e1); (Nolabel, e2)] 
       }
-  | e = app { e }
+  | e = app %prec below_arms { e }
 
 tuple:
   | first = expr_bin; COMMA; rest = separated_nonempty_list(COMMA, expr_bin)
@@ -548,7 +777,7 @@ tuple:
   | e = expr_bin { e }
   
 indexable:
-  | a = indexable; LBRACK; index = expr; RBRACK
+  | a = indexable; INDEX_LBRACK; index = expr; RBRACK
       { 
         let indices =
           match index.pexp_desc with
@@ -561,11 +790,21 @@ indexable:
           Ast_helper.Exp.apply ~loc f_get_array [ (Nolabel, acc); (Nolabel, i) ]
         ) a indices
       }
+  | e = indexable; DOT; f = IDENT
+    {
+      Ast_helper.Exp.field ~loc:(mkloc $startpos $endpos) e
+          (Location.mkloc (Longident.Lident f) (mkloc $startpos(f) $endpos(f)))
+    }
   | a = atom { a }
 
 app:
   | e1 = app; e2 = indexable
-    { Ast_helper.Exp.apply ~loc:(mkloc $startpos $endpos) e1 [ (Nolabel, e2) ] }
+    { let loc = mkloc $startpos $endpos in
+      match e1.pexp_desc with
+      (* `Some x`, `Node (l, v, r)`: a constructor takes its argument
+         directly (a tuple for several), it isn't a function application. *)
+      | Pexp_construct (c, None) -> Ast_helper.Exp.construct ~loc c (Some e2)
+      | _ -> Ast_helper.Exp.apply ~loc e1 [ (Nolabel, e2) ] }
   | e = indexable { e }
 
 atom:
@@ -575,7 +814,11 @@ atom:
   | c = CHAR { Ast_helper.Exp.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.char c) }
   | TRUE { mkbool (mkloc $startpos $endpos) true }
   | FALSE { mkbool (mkloc $startpos $endpos) false }
-  | x = IDENT { mkident (mkloc $startpos $endpos) x }
+  | x = IDENT
+      { let loc = mkloc $startpos $endpos in
+        if Char.uppercase_ascii x.[0] = x.[0] && x.[0] <> '_' && x.[0] <> '\''
+        then Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident x) loc) None
+        else mkident loc x }
   | q = QIDENT { mkqident (mkloc $startpos $endpos) q }
   | LPAREN; RPAREN { mkunit (mkloc $startpos $endpos) }
   | LPAREN; c = CUSTOM; RPAREN
@@ -586,3 +829,25 @@ atom:
       }
   | LPAREN; e = expr; RPAREN 
       { e }
+  | LBRACE; fs = separated_nonempty_list(SEMICOLON, record_field); RBRACE
+      { 
+        Ast_helper.Exp.record ~loc:(mkloc $startpos $endpos) fs None
+      }
+
+  (* `[| 1; 2; 3 |]`, or `[||]` for an empty array. *)
+  | LBRACKBAR; fs = separated_list(SEMICOLON, expr); BARRBRACK
+      { Ast_helper.Exp.array ~loc:(mkloc $startpos $endpos) fs }
+
+  (* `[1; 2; 3]`, or `[]`: built like OCaml does, as `1 :: (2 :: (3 :: []))`. *)
+  | LBRACK; fs = separated_list(SEMICOLON, expr); RBRACK
+      { let loc = mkloc $startpos $endpos in
+        let ctor name arg = Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident name) loc) arg in
+        List.fold_right
+          (fun e acc -> ctor "::" (Some (Ast_helper.Exp.tuple ~loc [ (None, e); (None, acc) ])))
+          fs (ctor "[]" None) }
+
+record_field:
+  | f = IDENT; EQ; e = expr
+      {
+        (Location.mkloc (Longident.Lident f) (mkloc $startpos(f) $endpos(f)), e)
+      }

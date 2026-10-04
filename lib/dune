@@ -5,4 +5,7 @@
 (ocamllex lexer)
 
 (menhir
- (modules parser))
+ (modules parser)
+ ; canonical LR(1): keeps the `match e { ... }` precedence (lib/parser.mly)
+ ; from leaking into `f { x = 1 }` elsewhere through merged LALR states
+ (flags --canonical))

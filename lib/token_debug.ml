@@ -13,6 +13,7 @@ let string_of_token : Parser.token -> string = function
   | Parser.LET -> "LET"
   | Parser.IF -> "IF"
   | Parser.THEN -> "THEN"
+  | Parser.MATCH -> "MATCH"
   | Parser.ELSE -> "ELSE"
   | Parser.FUN -> "FUN"
   | Parser.ARROW -> "ARROW"
@@ -31,6 +32,11 @@ let string_of_token : Parser.token -> string = function
   | Parser.QIDENT q -> Printf.sprintf "QIDENT %S" q
   | Parser.RBRACK -> Printf.sprintf "RBRACK"
   | Parser.LBRACK -> Printf.sprintf "LBRACK"
+  | Parser.INDEX_LBRACK -> Printf.sprintf "INDEX_LBRACK"
+  | Parser.LBRACKBAR -> Printf.sprintf "LBRACKBAR"
+  | Parser.BARRBRACK -> Printf.sprintf "BARRBRACK"
+  | Parser.DOT -> Printf.sprintf "DOT"
+  | Parser.BAR -> Printf.sprintf "BAR"
 
 (* Repeatedly calls the lexer and prints each token with its source
    position, until EOF (inclusive). Used by the `--tokens` debug mode. *)
