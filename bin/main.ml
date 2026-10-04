@@ -40,7 +40,18 @@ let provided_names (item : Parsetree.structure_item) : string list =
       vbs
   | Pstr_module mb -> (match mb.pmb_name.txt with Some n -> [ n ] | None -> [])
   | Pstr_modtype mtd -> [ mtd.pmtd_name.txt ]
-  | Pstr_type (_, decls) -> List.map (fun (d : Parsetree.type_declaration) -> d.ptype_name.txt) decls
+  | Pstr_type (_, decls) ->
+    (* A type is also needed when only its record fields or constructors are
+       used (`l.name`, `{ name = ... }`), never its name: those are provided
+       too, prefixed so they can't collide with values of the same name. *)
+    List.concat_map
+      (fun (d : Parsetree.type_declaration) ->
+        d.ptype_name.txt
+        :: (match d.ptype_kind with
+            | Ptype_record lds -> List.map (fun (ld : Parsetree.label_declaration) -> "." ^ ld.pld_name.txt) lds
+            | Ptype_variant cds -> List.map (fun (cd : Parsetree.constructor_declaration) -> "#" ^ cd.pcd_name.txt) cds
+            | _ -> []))
+      decls
   | _ -> []
 
 (* Every reference a structure_item's own definition makes -- walking
@@ -64,9 +75,28 @@ let referenced (item : Parsetree.structure_item) : (string * string option) list
        | [] -> ())
     | Longident.Lapply _ -> ()
   in
+  (* A record field or constructor: a plain one depends on its type's
+     declaration (see [provided_names]), a qualified one on its module. *)
+  let add_member prefix (lid : Longident.t) =
+    match lid with
+    | Longident.Lident n -> found := (prefix ^ n, None) :: !found
+    | _ -> add_lid lid
+  in
   let expr self (e : Parsetree.expression) =
-    (match e.pexp_desc with Pexp_ident { txt; _ } -> add_lid txt | _ -> ());
+    (match e.pexp_desc with
+     | Pexp_ident { txt; _ } -> add_lid txt
+     | Pexp_field (_, { txt; _ }) | Pexp_setfield (_, { txt; _ }, _) -> add_member "." txt
+     | Pexp_record (fields, _) -> List.iter (fun ({ Location.txt; _ }, _) -> add_member "." txt) fields
+     | Pexp_construct ({ txt; _ }, _) -> add_member "#" txt
+     | _ -> ());
     Ast_iterator.default_iterator.expr self e
+  in
+  let pat self (p : Parsetree.pattern) =
+    (match p.ppat_desc with
+     | Ppat_record (fields, _) -> List.iter (fun ({ Location.txt; _ }, _) -> add_member "." txt) fields
+     | Ppat_construct ({ txt; _ }, _) -> add_member "#" txt
+     | _ -> ());
+    Ast_iterator.default_iterator.pat self p
   in
   let module_expr self (me : Parsetree.module_expr) =
     (match me.pmod_desc with Pmod_ident { txt; _ } -> add_lid txt | _ -> ());
@@ -80,7 +110,7 @@ let referenced (item : Parsetree.structure_item) : (string * string option) list
     (match t.ptyp_desc with Ptyp_constr ({ txt; _ }, _) -> add_lid txt | _ -> ());
     Ast_iterator.default_iterator.typ self t
   in
-  let iterator = { Ast_iterator.default_iterator with expr; module_expr; module_type; typ } in
+  let iterator = { Ast_iterator.default_iterator with expr; pat; module_expr; module_type; typ } in
   iterator.structure_item iterator item;
   !found
 
@@ -267,19 +297,45 @@ type type_tree = Ty of string * type_tree list
 
 let ty_name (Ty (n, _)) = n
 
+(* Top-level types the program itself declares (`type test_struct { ... }`),
+   which an `impl ... of test_struct` can target just like a predefined one.
+   Filled once from the full structure before dispatch starts. *)
+let user_type_names : (string, unit) Hashtbl.t = Hashtbl.create 16
+
+let collect_user_type_names (structure : Parsetree.structure) =
+  List.iter
+    (fun (item : Parsetree.structure_item) ->
+      match item.pstr_desc with
+      | Pstr_type (_, decls) ->
+        List.iter (fun (d : Parsetree.type_declaration) -> Hashtbl.replace user_type_names d.ptype_name.txt ()) decls
+      | _ -> ())
+    structure
+
+let known_type_name (path : Path.t) =
+  match path with
+  | Path.Pident id when Hashtbl.mem user_type_names (Ident.name id) -> Some (Ident.name id)
+  | _ ->
+  if Path.same path Predef.path_int then Some "int"
+  else if Path.same path Predef.path_string then Some "string"
+  else if Path.same path Predef.path_float then Some "float"
+  else if Path.same path Predef.path_bool then Some "bool"
+  else if Path.same path Predef.path_char then Some "char"
+  else if Path.same path Predef.path_unit then Some "unit"
+  else if Path.same path Predef.path_array then Some "array"
+  else if Path.same path Predef.path_list then Some "list"
+  else None
+
+(* Just the outermost constructor's name (`array` for `'a array`, whose
+   element type may well still be unknown). *)
+let head_type_name (env : Env.t) (ty : Types.type_expr) =
+  match Types.get_desc (Ctype.expand_head env ty) with
+  | Tconstr (path, _, _) -> known_type_name path
+  | _ -> None
+
 let rec classify_texpr (env : Env.t) (ty : Types.type_expr) : type_tree option =
   match Types.get_desc (Ctype.expand_head env ty) with
   | Tconstr (path, args, _) ->
-    let name =
-      if Path.same path Predef.path_int then Some "int"
-      else if Path.same path Predef.path_string then Some "string"
-      else if Path.same path Predef.path_float then Some "float"
-      else if Path.same path Predef.path_bool then Some "bool"
-      else if Path.same path Predef.path_char then Some "char"
-      else if Path.same path Predef.path_unit then Some "unit"
-      else if Path.same path Predef.path_array then Some "array"
-      else None
-    in
+    let name = known_type_name path in
     (match name with
      | None -> None
      | Some n ->
@@ -327,6 +383,36 @@ let collect_ctor_methods (structure : Parsetree.structure) : (string, ctor_metho
                | _ -> ())
              sigs
          | _ -> ())
+      | _ -> ())
+    structure;
+  table
+
+(* Per overloaded trait method (see lib/parser.mly's [mkoverloadimpl]):
+   each overload's parameter type names and its generated function's name,
+   recovered from that name (`<method>__ovl__<ty1>__<ty2>...`). *)
+let collect_overloads (structure : Parsetree.structure) : (string, string list * string) Hashtbl.t =
+  let table = Hashtbl.create 16 in
+  let marker = "__ovl__" in
+  let find_sub s sub =
+    let n = String.length s and m = String.length sub in
+    let rec go i = if i + m > n then None else if String.sub s i m = sub then Some i else go (i + 1) in
+    go 0
+  in
+  List.iter
+    (fun (item : Parsetree.structure_item) ->
+      match item.pstr_desc with
+      | Pstr_value (_, [ { pvb_pat = { ppat_desc = Ppat_var { txt = fname; _ }; _ }; _ } ]) ->
+        (match find_sub fname marker with
+         | Some i ->
+           let meth = String.sub fname 0 i in
+           let rest = String.sub fname (i + String.length marker) (String.length fname - i - String.length marker) in
+           let rec split s =
+             match find_sub s "__" with
+             | Some j -> String.sub s 0 j :: split (String.sub s (j + 2) (String.length s - j - 2))
+             | None -> [ s ]
+           in
+           Hashtbl.add table meth (split rest, fname)
+         | None -> ())
       | _ -> ())
     structure;
   table
@@ -403,6 +489,7 @@ type dispatch_target =
   | Plain of string
   | Functored of string * functor_arg
   | ViaDictParam of string
+  | Overload of string
 
 (* Identifies a source span well enough to match the same node between the
    probe's Typedtree and the original Parsetree (both come from the exact
@@ -420,6 +507,7 @@ let harvest_dispatch
     (methods : (string * string * string list * (string * int) option list) list)
     (abstract_types : (string, string list) Hashtbl.t)
     (ctor_methods : (string, ctor_method) Hashtbl.t)
+    (overloads : (string, string list * string) Hashtbl.t)
     (prior_dict_requirements : (string, string * string) Hashtbl.t)
     (typed : Typedtree.structure) =
   let trait_of_name = Hashtbl.create 16 in
@@ -444,6 +532,9 @@ let harvest_dispatch
      *external* call sites dispatching to that impl (which must then pass
      an existing impl module as the functor argument, not a bare struct). *)
   let dict_requirements : (string, string * string) Hashtbl.t = Hashtbl.copy prior_dict_requirements in
+  (* Overloaded calls whose argument types are all known but match no impl:
+     location, trait, those types. *)
+  let overload_misses : (Location.t * string * string list) list ref = ref [] in
   (* First one wins: on a later probe round, an impl's body was already
      rewritten and upgraded (its `X.__elem0__` renamed to `X.a`), and must
      not re-record its requirement under that new name. *)
@@ -538,7 +629,8 @@ let harvest_dispatch
           | Texp_ident (_, lid2, _) ->
             let name2 = Longident.last lid2.txt in
             (match Hashtbl.find_opt trait_of_name name2, Hashtbl.find_opt arity_of_name name2 with
-             | Some trait_name2, Some arity2 when arity2 > 0 && List.length all_args2 >= arity2 ->
+             | Some trait_name2, Some arity2
+               when arity2 > 0 && List.length all_args2 >= arity2 && not (Hashtbl.mem overloads name2) ->
                let dispatch_args2 = List.filteri (fun i _ -> i < arity2) all_args2 in
                let is_callback_var (a : Typedtree.expression) =
                  match a.exp_desc with
@@ -674,6 +766,28 @@ let harvest_dispatch
       if target_is_self mod_name then None else Some (Plain mod_name)
     | None -> None
   in
+  (* A call to an overloaded method: the overload whose parameter types
+     match the outermost constructors of the actual arguments' types (e.g.
+     `int array`, `int` -> `array, int`). None while any is still unknown. *)
+  let resolve_overload loc name (arg_tys : (Env.t * Types.type_expr) list) : dispatch_target option =
+    match Hashtbl.find_all overloads name with
+    | [] -> None
+    | ((tys, _) :: _) as candidates ->
+      let n = List.length tys in
+      if List.length arg_tys < n then None
+      else
+        let heads = List.map (fun (env, ty) -> head_type_name env (strip_tpoly ty)) (List.filteri (fun i _ -> i < n) arg_tys) in
+        if List.exists Option.is_none heads then None
+        else
+          let heads = List.map Option.get heads in
+          match List.find_map (fun (tys, fname) -> if tys = heads then Some (Overload fname) else None) candidates with
+          | Some t -> Some t
+          | None ->
+            (* Every type is known and still nothing matches: that's final. *)
+            let trait_name = Option.value ~default:"?" (Hashtbl.find_opt trait_of_name name) in
+            overload_misses := (loc, trait_name, heads) :: !overload_misses;
+            None
+  in
   let expr (iter : Tast_iterator.iterator) (e : Typedtree.expression) =
     (match e.exp_desc with
      | Texp_apply _ ->
@@ -682,6 +796,11 @@ let harvest_dispatch
         | Texp_ident (_, lid, _) ->
           let name = Longident.last lid.txt in
           (match Hashtbl.find_opt trait_of_name name, Hashtbl.find_opt arity_of_name name with
+           | Some _, Some _ when Hashtbl.mem overloads name ->
+             let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) all_args in
+             (match resolve_overload head.exp_loc name arg_tys with
+              | Some t -> Hashtbl.replace table (loc_key head.exp_loc) t
+              | None -> ())
            | Some _, Some arity when arity > 0 && List.length all_args >= arity && Hashtbl.mem ctor_methods name ->
              let dispatch_args = List.filteri (fun i _ -> i < arity) all_args in
              let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) dispatch_args in
@@ -712,10 +831,13 @@ let harvest_dispatch
                  (match Types.get_desc (Ctype.expand_head a.exp_env a.exp_type) with
                   | Tconstr (path, [], _) ->
                     (match path_is_x_field path with Some field -> `DirectX field | None -> `None)
-                  | Tconstr (path, [ arg_ty ], _) when Path.same path Predef.path_array ->
+                  (* Any known one-parameter container (`array`, `list`, a
+                     user's `a btree`...), not just arrays. *)
+                  | Tconstr (path, [ arg_ty ], _) when known_type_name path <> None ->
+                    let container = Option.get (known_type_name path) in
                     (match Types.get_desc (Ctype.expand_head a.exp_env arg_ty) with
                      | Tconstr (apath, [], _) ->
-                       (match path_is_x_field apath with Some field -> `ContainerX ("array", field) | None -> `None)
+                       (match path_is_x_field apath with Some field -> `ContainerX (container, field) | None -> `None)
                      | _ -> `None)
                   | _ -> `None)
              in
@@ -764,12 +886,15 @@ let harvest_dispatch
                          (match List.assoc_opt abstract_name concrete_of_abstract, arg.exp_desc with
                           | Some concrete_type, Texp_ident (_, arg_lid, _) ->
                             let arg_name = Longident.last arg_lid.txt in
+                            (* An overloaded callback (e.g. `(+)`) is resolved
+                               from its own instantiated type instead, by the
+                               bare-identifier case below. *)
                             (match Hashtbl.find_opt trait_of_name arg_name with
-                             | Some arg_trait ->
+                             | Some arg_trait when not (Hashtbl.mem overloads arg_name) ->
                                let arg_mod_name = impl_module_name arg_trait concrete_type in
                                if not (target_is_self arg_mod_name) then
                                  Hashtbl.replace table (loc_key arg.exp_loc) (Plain arg_mod_name)
-                             | None -> ())
+                             | _ -> ())
                           | _ -> ())
                        | _ -> ())
                      domains
@@ -813,12 +938,12 @@ let harvest_dispatch
                              | Texp_ident (_, lid2, _) ->
                                let name2 = Longident.last lid2.txt in
                                (match Hashtbl.find_opt trait_of_name name2 with
-                                | Some trait_name2 ->
+                                | Some trait_name2 when not (Hashtbl.mem overloads name2) ->
                                   Hashtbl.replace table (loc_key callback_arg.exp_loc) (ViaDictParam name2);
                                   (match !current_impl_module with
                                    | Some mod_name2 -> add_dict_requirement mod_name2 (field, trait_name2)
                                    | None -> ())
-                                | None -> ())
+                                | _ -> ())
                              | _ -> ()))
                        | _ -> ())
                      domains
@@ -845,6 +970,10 @@ let harvest_dispatch
           in
           let arg_tys = param_tys arity e.exp_type in
           (match Hashtbl.find_opt ctor_methods name with
+           | _ when Hashtbl.mem overloads name ->
+             (match resolve_overload e.exp_loc name arg_tys with
+              | Some t -> Hashtbl.replace table (loc_key e.exp_loc) t
+              | None -> ())
            | Some cm ->
              (match resolve_ctor cm arg_tys with
               | Some t -> Hashtbl.replace table (loc_key e.exp_loc) t
@@ -859,7 +988,20 @@ let harvest_dispatch
                     | mod_name, _, Some t when not (target_is_self mod_name) ->
                       Hashtbl.replace table (loc_key e.exp_loc) t
                     | _ -> ())
-                 | None -> ())
+                 | None ->
+                   (* Inside a generic impl, on its own element type (e.g.
+                      `(+)` in `Array.map2 (+) l1 l2`, for `arithm of
+                      array`): same as [`DirectX] for an applied call. *)
+                   (match Types.get_desc (Ctype.expand_head env self_ty) with
+                    | Tconstr (path, [], _) ->
+                      (match path_is_x_field path with
+                       | Some field ->
+                         Hashtbl.replace table (loc_key e.exp_loc) (ViaDictParam name);
+                         (match !current_impl_module with
+                          | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
+                          | None -> ())
+                       | None -> ())
+                    | _ -> ()))
               | _ -> ()))
         | _ -> ())
      | _ -> ());
@@ -877,6 +1019,13 @@ let harvest_dispatch
   in
   let iterator = { Tast_iterator.default_iterator with expr; module_binding } in
   iterator.structure iterator typed;
+  (match List.rev !overload_misses with
+   | (loc, trait_name, tys) :: _ ->
+     Location.print_report Format.err_formatter
+       (Location.error ~loc
+          (Printf.sprintf "No impl of trait `%s` for %s" trait_name (String.concat ", " tys)));
+     exit 1
+   | [] -> ());
   (table, dict_requirements)
 
 let fresh_dispatch_module_counter = ref 0
@@ -909,6 +1058,7 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
        | Some (ViaDictParam method_name) ->
          let qualified = Option.get (Longident.unflatten [ "X"; method_name ]) in
          { e with pexp_desc = Pexp_ident (Location.mkloc qualified e.pexp_loc) }
+       | Some (Overload fname) -> { e with pexp_desc = Pexp_ident (Location.mkloc (Longident.Lident fname) e.pexp_loc) }
        | Some (Functored (mod_name, arg)) ->
          let loc = e.pexp_loc in
          let fresh = fresh_dispatch_module_name () in
@@ -1086,7 +1236,13 @@ let mk_probe_stub loc (names : string list) : Parsetree.expression =
       | None ->
         (match find_index (fun n -> n = return_name) param_names with
          | Some i -> var i
-         | None -> if params = [] then Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None else var 0)
+         | None when params = [] -> Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None
+         | None ->
+           (* A return type tied to no parameter (e.g. `mul`'s `c` in `a ->
+              b -> c`): left free, the overload picked decides it. *)
+           Ast_helper.Exp.apply ~loc
+             (Ast_helper.Exp.ident ~loc (Location.mkloc (Option.get (Longident.unflatten [ "Obj"; "magic" ])) loc))
+             [ (Asttypes.Nolabel, Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None) ])
     in
     let body = List.fold_right (fun u acc -> Ast_helper.Exp.sequence ~loc u acc) unify_exprs return_expr in
     List.fold_right
@@ -1113,6 +1269,102 @@ let entry_point : Parsetree.structure_item =
             (Location.mkloc (Longident.Lident "()") loc)
             None) ])
 
+let clone_file ~file ~orig ~sig_text = Printf.sprintf "%s [%s : %s]" file orig sig_text
+
+(* The call that made [monomorphize] create each clone, keyed by the clone's
+   tagged file name ([clone_file]): an error inside a clone is the caller's
+   fault (wrong types for that function), so it gets reported there. *)
+let clone_call_site : (string, Location.t) Hashtbl.t = Hashtbl.create 16
+
+
+(* Splits "X has type A but an expression was expected of type B ..." (with
+   whitespace already collapsed) into (A, B). *)
+let type_clash (text : string) =
+  let find sub from =
+    let n = String.length sub in
+    let rec go i = if i + n > String.length text then None else if String.sub text i n = sub then Some i else go (i + 1) in
+    go from
+  in
+  match find "has type " 0 with
+  | None -> None
+  | Some i ->
+    let a_start = i + 9 in
+    (match find " but an expression was expected of type " a_start with
+     | None -> None
+     | Some j ->
+       let b_start = j + 40 in
+       let b_end = match find " Type " b_start with Some k -> k | None -> String.length text in
+       Some (String.sub text a_start (j - a_start), String.trim (String.sub text b_start (b_end - b_start))))
+
+(* `+` for (int, float) returning float where `int -> float -> int` was
+   expected: the classic fold whose accumulator starts with the wrong type
+   (`sum 0 t` on a float btree). *)
+let accumulator_hint (text : string) : string option =
+  let arrows t = List.map String.trim (String.split_on_char '>' t) |> List.map (fun p -> if String.ends_with ~suffix:"-" p then String.trim (String.sub p 0 (String.length p - 1)) else p) in
+  match String.index_opt text '`', type_clash text with
+  | Some q, Some (got, expected) ->
+    (match String.index_from_opt text (q + 1) '`', arrows got, arrows expected with
+     | Some q', [ a; b; r ], [ a'; b'; r' ] when a = a' && b = b' && r <> r' && r' = a ->
+       let sym = String.sub text (q + 1) (q' - q - 1) in
+       let example = if r = "float" && a = "int" then " (e.g. `0.` instead of `0`)" else "" in
+       let article t = match t.[0] with 'a' | 'e' | 'i' | 'o' | 'u' -> "an " ^ t | _ -> "a " ^ t in
+       Some
+         (Printf.sprintf
+            "`%s` on (%s, %s) returns %s, but its result must stay %s here, like a fold's accumulator keeps the type of its starting value. Start from %s instead%s."
+            sym a b (article r) (article a) (article r) example)
+     | _ -> None)
+  | _ -> None
+
+let collapse_spaces s =
+  String.split_on_char '\n' s |> String.concat " " |> String.split_on_char ' ' |> List.filter (( <> ) "") |> String.concat " "
+
+(* Reports a type error like OCaml would, but readable for SCaml: internal
+   operator names become their symbol (`op___0___` -> `+`), and an error
+   inside a monomorphized clone (e.g. the stdlib's `sum` specialized for the
+   caller's types) is reported at the user's call that caused it, with the
+   clone's own location kept as a detail. *)
+let report_type_error exn =
+  match Location.error_of_exn exn with
+  | Some (`Ok report) ->
+    let render (m : Location.msg) = SCaml.Op_names.prettify (Format_doc.asprintf "%a" Format_doc.pp_doc m.txt) in
+    let pretty (m : Location.msg) : Location.msg = { m with txt = Format_doc.doc_printf "%s" (render m) } in
+    let main_loc = report.main.loc in
+    let rec user_site (loc : Location.t) depth =
+      match Hashtbl.find_opt clone_call_site loc.loc_start.pos_fname with
+      | Some call when depth < 32 -> user_site call (depth + 1)
+      | _ -> loc
+    in
+    let report =
+      match Hashtbl.find_opt clone_call_site main_loc.loc_start.pos_fname with
+      | None -> { report with main = pretty report.main; sub = List.map pretty report.sub }
+      | Some _ ->
+        let fname = main_loc.loc_start.pos_fname in
+        let instance =
+          match String.index_opt fname '[' with
+          | Some i -> String.sub fname (i + 1) (String.length fname - i - 2)
+          | None -> fname
+        in
+        let fn_name, sig_text =
+          match String.index_opt instance ':' with
+          | Some i -> String.trim (String.sub instance 0 i), String.trim (String.sub instance (i + 1) (String.length instance - i - 1))
+          | None -> instance, ""
+        in
+        (* The clone's location, shown under its real file name. *)
+        let untag (p : Lexing.position) =
+          match String.index_opt p.pos_fname '[' with
+          | Some i -> { p with pos_fname = String.trim (String.sub p.pos_fname 0 i) }
+          | None -> p
+        in
+        let clone_loc = { main_loc with loc_start = untag main_loc.loc_start; loc_end = untag main_loc.loc_end } in
+        let text = render report.main in
+        let hint = match accumulator_hint (collapse_spaces text) with Some h -> [ Location.msg "Hint: %s" h ] | None -> [] in
+        { report with
+          main = Location.msg ~loc:(user_site main_loc 0) "This call to `%s` does not type-check: its arguments have types %s" fn_name sig_text;
+          sub = (Location.msg ~loc:clone_loc "in `%s`: %s" fn_name text :: List.map pretty report.sub) @ hint }
+    in
+    Location.print_report Format.err_formatter report
+  | _ -> Location.report_exception Format.err_formatter exn
+
 (* Runs the probe typecheck and hands back the resulting Typedtree.structure,
    to be walked by [harvest_dispatch]. *)
 let probe_typecheck env (methods : (string * string * string list * (string * int) option list) list) (user_structure : Parsetree.structure) : Typedtree.structure =
@@ -1120,8 +1372,328 @@ let probe_typecheck env (methods : (string * string * string list * (string * in
   match Typemod.type_structure env probe_structure with
   | (typedtree, _, _, _, _) -> typedtree
   | exception exn ->
-    Location.report_exception Format.err_formatter exn;
+    report_type_error exn;
     exit 1
+
+(* ---- Monomorphization ----
+
+   Dispatch happens where a function is *defined*: a top-level function
+   whose own parameters stay polymorphic (e.g. `fn tim2 m { map (..) m }`,
+   or `fn show x { println x }`) has trait calls nothing inside it can
+   resolve. So, once the probe rounds stop making progress, each such
+   generic function gets one clone per concrete type it is called at, with
+   its parameters annotated with that type:
+
+     let tim2__mono1 (m : int array) = map (fun x -> x * 2) m
+
+   and every such call site is pointed at its clone. The next probe rounds
+   then resolve the clone's trait calls like any other code. Generic
+   originals that end up unused are dropped ([drop_unused_generics]). *)
+
+(* A top-level, single-name value binding: its name and expression. *)
+let simple_binding (item : Parsetree.structure_item) =
+  match item.pstr_desc with
+  | Pstr_value (_, [ { pvb_pat = { ppat_desc = Ppat_var { txt; _ }; _ }; pvb_expr; _ } ]) -> Some (txt, pvb_expr)
+  | _ -> None
+
+(* Does [e] still mention a trait method by its bare name, i.e. a call the
+   dispatch couldn't resolve? *)
+let has_unresolved_trait_call (method_names : string list) (e : Parsetree.expression) =
+  let found = ref false in
+  let expr self (e : Parsetree.expression) =
+    (match e.pexp_desc with
+     | Pexp_ident { txt = Longident.Lident n; _ } when List.mem n method_names -> found := true
+     | _ -> ());
+    Ast_iterator.default_iterator.expr self e
+  in
+  let it = { Ast_iterator.default_iterator with expr } in
+  it.expr it e;
+  !found
+
+(* Top-level functions that are generic in the dispatch sense: they still
+   hold an unresolved trait call, or call (or pass along) another such
+   function -- `fn showall m { show m }` is as stuck as `show` itself. *)
+let generic_functions (method_names : string list) (structure : Parsetree.structure) : string list =
+  let fns = List.filter_map simple_binding structure in
+  let rec fix acc =
+    let acc' =
+      List.filter_map
+        (fun (name, e) ->
+          if List.mem name acc then Some name
+          else if has_unresolved_trait_call (method_names @ acc) e then Some name
+          else None)
+        fns
+    in
+    if List.length acc' = List.length acc then acc else fix acc'
+  in
+  fix []
+
+(* How many parameters [e] takes up front (`fun a -> fun b -> ..` is 2). *)
+let rec fun_arity (e : Parsetree.expression) =
+  match e.pexp_desc with
+  | Pexp_function (params, _, Pfunction_body body) -> List.length params + fun_arity body
+  | Pexp_function (params, _, Pfunction_cases _) -> List.length params + 1
+  | _ -> 0
+
+(* The first [n] parameter types of a (possibly instantiated) function type. *)
+let rec arrow_params n (ty : Types.type_expr) =
+  if n = 0 then []
+  else
+    match Types.get_desc ty with
+    | Tarrow (_, t1, t2, _) -> strip_tpoly t1 :: arrow_params (n - 1) t2
+    | _ -> []
+
+(* A fully known type, back as source syntax for an annotation; None if it
+   still contains a type variable (or something we don't print).
+   Abbreviations are expanded first, so equal types print equally
+   (`Arithm__int.a Mappable__array.t` is just `int array`) and share one
+   clone. *)
+let rec core_of_type (env : Env.t) (ty : Types.type_expr) : Parsetree.core_type option =
+  let core_of_type = core_of_type env in
+  let all l = if List.for_all Option.is_some l then Some (List.map Option.get l) else None in
+  match Types.get_desc (Ctype.expand_head env ty) with
+  | Tpoly (t, []) -> core_of_type t
+  | Tarrow (Nolabel, t1, t2, _) ->
+    (match core_of_type t1, core_of_type t2 with
+     | Some a, Some b -> Some (Ast_helper.Typ.arrow ~loc Nolabel a b)
+     | _ -> None)
+  | Ttuple l ->
+    Option.map
+      (fun cts -> Ast_helper.Typ.tuple ~loc (List.map2 (fun (lbl, _) ct -> (lbl, ct)) l cts))
+      (all (List.map (fun (_, t) -> core_of_type t) l))
+  | Tconstr (path, args, _) ->
+    let name = Path.name path in
+    if String.contains name '(' then None
+    else
+      (match Longident.unflatten (String.split_on_char '.' name), all (List.map core_of_type args) with
+       | Some lid, Some cargs -> Some (Ast_helper.Typ.constr ~loc (Location.mkloc lid loc) cargs)
+       | _ -> None)
+  | _ -> None
+
+(* [e] with its first parameters annotated with [tys], in order. *)
+let annotate_params (tys : Parsetree.core_type list) (e : Parsetree.expression) =
+  let rec go tys (e : Parsetree.expression) =
+    match tys, e.pexp_desc with
+    | [], _ -> e
+    | _, Pexp_function (params, c, body) ->
+      let rec ann tys = function
+        | [] -> (tys, [])
+        | (p : Parsetree.function_param) :: rest ->
+          (match tys, p.pparam_desc with
+           | ty :: tys', Pparam_val (lbl, def, pat) ->
+             let p' = { p with pparam_desc = Parsetree.Pparam_val (lbl, def, Ast_helper.Pat.constraint_ ~loc:pat.ppat_loc pat ty) } in
+             let tys'', rest' = ann tys' rest in
+             (tys'', p' :: rest')
+           | _ ->
+             let tys', rest' = ann tys rest in
+             (tys', p :: rest'))
+      in
+      let tys', params' = ann tys params in
+      let body' = match body with Parsetree.Pfunction_body b -> Parsetree.Pfunction_body (go tys' b) | cases -> cases in
+      { e with pexp_desc = Pexp_function (params', c, body') }
+    | _ -> e
+  in
+  go tys e
+
+(* A fresh copy of a generic function's definition for one concrete
+   instantiation. Every location is moved to a distinct file name (which
+   also names the instantiation, for error messages): dispatch results are
+   keyed by source location, and two clones of the same body must not share
+   them. Self-references are renamed too, so a recursive function recurses
+   into its own clone. *)
+let clone_loc ~orig ~sig_text (l : Location.t) =
+  let tag (p : Lexing.position) = { p with pos_fname = clone_file ~file:p.pos_fname ~orig ~sig_text } in
+  { l with loc_start = tag l.loc_start; loc_end = tag l.loc_end }
+
+let mk_clone ~orig ~clone ~(tys : Parsetree.core_type list) ~(sig_text : string) (e : Parsetree.expression) =
+  let location _ l = clone_loc ~orig ~sig_text l in
+  let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) =
+    match e.pexp_desc with
+    | Pexp_ident { txt = Longident.Lident n; loc } when n = orig ->
+      { e with pexp_desc = Pexp_ident (Location.mkloc (Longident.Lident clone) (m.location m loc)); pexp_loc = m.location m e.pexp_loc }
+    | _ -> Ast_mapper.default_mapper.expr m e
+  in
+  let mapper = { Ast_mapper.default_mapper with location; expr } in
+  annotate_params tys (mapper.expr mapper e)
+
+(* One monomorphization step over a structure that the probe rounds can no
+   longer improve ([typed] is that same structure's probe). [cache] maps
+   (function, parameter types) to an existing clone's name across steps.
+   Covers top-level functions and local ones (`let f = fun .. in ..`, e.g.
+   a nested `fn aux acc n { .. }`): a local clone is bound right after its
+   original, in the same scope. Bindings are matched between the Parsetree
+   and the probe's Typedtree by their pattern's location. Returns the new
+   structure and whether anything changed. *)
+let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.t) (counter : int ref)
+    (typed : Typedtree.structure) (structure : Parsetree.structure) : Parsetree.structure * bool =
+  let generic_names = generic_functions method_names structure in
+  let stuck = method_names @ generic_names in
+  (* Candidates, by pattern location: functions still holding an
+     unresolved trait call (or, top-level, calling another such function). *)
+  let candidates = Hashtbl.create 8 in
+  let top_level = List.filter_map simple_binding structure |> List.map fst in
+  let value_binding self (vb : Parsetree.value_binding) =
+    (match vb.pvb_pat.ppat_desc with
+     | Ppat_var { txt = name; loc = name_loc } when fun_arity vb.pvb_expr > 0 && not (name_loc = Location.none) ->
+       let is_generic =
+         if List.mem name top_level then List.mem name generic_names
+         else has_unresolved_trait_call stuck vb.pvb_expr
+       in
+       if is_generic then Hashtbl.replace candidates (loc_key name_loc) (fun_arity vb.pvb_expr)
+     | _ -> ());
+    Ast_iterator.default_iterator.value_binding self vb
+  in
+  let it = { Ast_iterator.default_iterator with value_binding } in
+  it.structure it structure;
+  (* ...whose parameters really are polymorphic (otherwise a clone would be
+     no more concrete than the original). Keyed by their own [Ident.t], so
+     a local variable shadowing the name is never mistaken for them. *)
+  let generic = ref [] in
+  let value_binding (self : Tast_iterator.iterator) (vb : Typedtree.value_binding) =
+    (match vb.vb_pat.pat_desc with
+     | Tpat_var (id, { txt = name; loc = name_loc }, _) ->
+       (match Hashtbl.find_opt candidates (loc_key name_loc) with
+        | Some arity ->
+          let params = arrow_params arity vb.vb_expr.exp_type in
+          if List.exists (fun t -> core_of_type vb.vb_expr.exp_env t = None) params then
+            generic := (id, (name, arity, loc_key name_loc)) :: !generic
+        | None -> ())
+     | _ -> ());
+    Tast_iterator.default_iterator.value_binding self vb
+  in
+  let it = { Tast_iterator.default_iterator with value_binding } in
+  it.structure it typed;
+  if !generic = [] then (structure, false)
+  else begin
+    (* Call sites with fully known parameter types -> their clone. *)
+    let redirect = Hashtbl.create 8 in
+    let new_clones = ref [] in
+    let expr (it : Tast_iterator.iterator) (e : Typedtree.expression) =
+      (match e.exp_desc with
+       | Texp_ident (Pident id, _, _) ->
+         (match List.find_opt (fun (gid, _) -> Ident.same gid id) !generic with
+          | Some (_, (name, arity, def_key)) ->
+            let params = List.map (core_of_type e.exp_env) (arrow_params arity (Ctype.expand_head e.exp_env e.exp_type)) in
+            if List.length params = arity && List.for_all Option.is_some params then begin
+              let tys = List.map Option.get params in
+              let sig_text = String.concat " -> " (List.map (Format.asprintf "%a" Pprintast.core_type) tys) in
+              let (f, sc, ec) = def_key in
+              let key = Printf.sprintf "%s@%s:%d-%d : %s" name f sc ec sig_text in
+              let clone =
+                match Hashtbl.find_opt cache key with
+                | Some c -> c
+                | None ->
+                  incr counter;
+                  let c = Printf.sprintf "%s__mono%d" name !counter in
+                  Hashtbl.replace cache key c;
+                  Hashtbl.replace clone_call_site (clone_file ~file:f ~orig:name ~sig_text) e.exp_loc;
+                  new_clones := (def_key, name, c, tys, sig_text) :: !new_clones;
+                  c
+              in
+              Hashtbl.replace redirect (loc_key e.exp_loc) clone
+            end
+          | None -> ())
+       | _ -> ());
+      Tast_iterator.default_iterator.expr it e
+    in
+    let it = { Tast_iterator.default_iterator with expr } in
+    it.structure it typed;
+    if Hashtbl.length redirect = 0 then (structure, false)
+    else begin
+      (* Clones of the binding at [pat_loc], built from its original
+         expression as it was *before* redirecting, so the clone's own call
+         sites get fresh locations and are redirected in a later step. *)
+      let clones_of (pat : Parsetree.pattern) (e : Parsetree.expression) =
+        let pat_loc = match pat.ppat_desc with Ppat_var { loc; _ } -> loc | _ -> pat.ppat_loc in
+        List.filter_map
+          (fun (def_key, orig, clone, tys, sig_text) ->
+            if def_key <> loc_key pat_loc then None
+            else
+              Some
+                (let ploc = clone_loc ~orig ~sig_text pat_loc in
+                 Ast_helper.Vb.mk ~loc:ploc
+                   (Ast_helper.Pat.var ~loc:ploc (Location.mkloc clone ploc))
+                   (mk_clone ~orig ~clone ~tys ~sig_text e)))
+          (List.rev !new_clones)
+      in
+      let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) =
+        match e.pexp_desc with
+        | Pexp_ident { txt = Longident.Lident _; loc } when Hashtbl.mem redirect (loc_key e.pexp_loc) ->
+          { e with pexp_desc = Pexp_ident (Location.mkloc (Longident.Lident (Hashtbl.find redirect (loc_key e.pexp_loc))) loc) }
+        | Pexp_let (rf, [ vb ], body) ->
+          let mapped = Ast_mapper.default_mapper.expr m e in
+          (match clones_of vb.pvb_pat vb.pvb_expr, mapped.pexp_desc with
+           | [], _ -> mapped
+           | clones, Pexp_let (rf', vbs', body') ->
+             let body'' = List.fold_right (fun c acc -> Ast_helper.Exp.let_ ~loc rf [ c ] acc) clones body' in
+             { mapped with pexp_desc = Pexp_let (rf', vbs', body'') }
+           | _ -> mapped)
+        | _ -> Ast_mapper.default_mapper.expr m e
+      in
+      let mapper = { Ast_mapper.default_mapper with expr } in
+      (* A top-level clone goes right before the first item that uses it,
+         not right after its original: a clone is specialized to its
+         caller's types (e.g. the stdlib's `sum` cloned for a user `tree`),
+         which -- like the impls its body will dispatch to -- may only be
+         declared after the original, but are always before that caller.
+         Falls back to right after the original if nothing uses it. *)
+      let mapped = List.map (fun item -> (item, mapper.structure_item mapper item)) structure in
+      let uses name item' = List.mem (name, None) (referenced item') in
+      let with_clones =
+        let rec go before = function
+          | [] -> []
+          | ((item : Parsetree.structure_item), item') :: rest ->
+            let clones =
+              match item.pstr_desc with
+              | Pstr_value (rf, [ vb ]) ->
+                List.map
+                  (fun (c : Parsetree.value_binding) ->
+                    let name = match c.pvb_pat.ppat_desc with Ppat_var { txt; _ } -> txt | _ -> "" in
+                    (name, Ast_helper.Str.value ~loc rf [ c ]))
+                  (clones_of vb.pvb_pat vb.pvb_expr)
+              | _ -> []
+            in
+            let placed, unused = List.partition (fun (name, _) -> List.exists (fun (_, i') -> uses name i') rest) clones in
+            let pending = before @ placed in
+            let here, later = List.partition (fun (name, _) -> uses name item') pending in
+            List.map snd here @ (item' :: List.map snd unused) @ go later rest
+        in
+        go [] mapped
+      in
+      (with_clones, true)
+    end
+  end
+
+(* Generic originals nothing refers to anymore (every use now goes to a
+   clone): dropped, since their unresolved trait calls can't type-check.
+   One still in use is kept, so the final type-check reports the real
+   problem (its unresolved call) rather than a missing function. Local
+   ones (`let f = .. in body`) likewise, when [body] no longer uses [f]. *)
+let drop_unused_generics (method_names : string list) (structure : Parsetree.structure) =
+  let mentions name (e : Parsetree.expression) = has_unresolved_trait_call [ name ] e in
+  let rec go structure =
+    let generic_names = generic_functions method_names structure in
+    let droppable item =
+      match simple_binding item with
+      | Some (name, e) ->
+        name <> "main" && fun_arity e > 0 && List.mem name generic_names
+        && not (List.exists (fun other -> other != item && List.mem name (List.map fst (referenced other))) structure)
+      | None -> false
+    in
+    let kept = List.filter (fun item -> not (droppable item)) structure in
+    if List.length kept = List.length structure then structure else go kept
+  in
+  let structure = go structure in
+  let stuck = method_names @ generic_functions method_names structure in
+  let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) =
+    match e.pexp_desc with
+    | Pexp_let (_, [ { pvb_pat = { ppat_desc = Ppat_var { txt = name; _ }; _ }; pvb_expr; _ } ], body)
+      when fun_arity pvb_expr > 0 && has_unresolved_trait_call stuck pvb_expr && not (mentions name body) ->
+      m.expr m body
+    | _ -> Ast_mapper.default_mapper.expr m e
+  in
+  let mapper = { Ast_mapper.default_mapper with expr } in
+  mapper.structure mapper structure
 
 let open_lexbuf filename =
   let ic = open_in filename in
@@ -1179,10 +1751,46 @@ let load_stdlib () : Parsetree.structure =
     |> List.concat_map (fun f -> parse_scaml_file (Filename.concat stdlib_dir f))
   else []
 
+(* The user's file is compiled in one structure with the stdlib, and the
+   passes above (dead-code elimination, generics, monomorphization) tell
+   top-level functions apart by name alone: redefining e.g. `sum` makes them
+   mix the two up and fail far away, with an "Unbound value op___0___" inside
+   the stdlib. Rejected up front instead, at the user's own definition. *)
+let check_no_stdlib_redefinition (stdlib : Parsetree.structure) (user : Parsetree.structure) =
+  let bindings structure =
+    List.concat_map
+      (fun (item : Parsetree.structure_item) ->
+        match item.pstr_desc with
+        | Pstr_value (_, vbs) ->
+          List.filter_map
+            (fun (vb : Parsetree.value_binding) ->
+              match vb.pvb_pat.ppat_desc with
+              | Ppat_var { txt; loc } -> Some (txt, loc)
+              | _ -> None)
+            vbs
+        | _ -> [])
+      structure
+  in
+  let stdlib_names = bindings stdlib in
+  List.iter
+    (fun (name, loc) ->
+      match List.assoc_opt name stdlib_names with
+      | None -> ()
+      | Some stdlib_loc ->
+        Location.print_report Format.err_formatter
+          (Location.error ~loc
+             ~sub:[ Location.msg ~loc:stdlib_loc "`%s` is defined here in the stdlib" name ]
+             (Printf.sprintf "`%s` is already defined by the stdlib; choose another name" name));
+        exit 1)
+    (bindings user)
+
 let () =
   let args = List.tl (Array.to_list Sys.argv) in
   let verbose = List.mem "--verbose" args || List.mem "-v" args in
   let tokens_mode = List.mem "--tokens" args in
+  (* Keep every intermediate file next to the source (.generated.ml, .cmi,
+     .cmx, .o); by default only the executable is produced there. *)
+  let keep = List.mem "--keep" args || List.mem "-k" args in
   let positional = List.filter (fun a -> String.length a = 0 || a.[0] <> '-') args in
   match tokens_mode, positional with
   | true, [ filename ] ->
@@ -1203,6 +1811,7 @@ let () =
        operators instead of the trait-dispatched ones. *)
     let stdlib_structure = load_stdlib () in
     let user_file_structure = parse_scaml_file filename in
+    check_no_stdlib_redefinition stdlib_structure user_file_structure;
     let user_structure = stdlib_structure @ user_file_structure in
 
     if not (has_main user_structure) then begin
@@ -1214,34 +1823,47 @@ let () =
 
     (* Probe typecheck + rewrite modules in ast + ocaml typecheck*)
     let trait_methods = collect_trait_methods user_structure in
+    collect_user_type_names user_structure;
     let user_structure =
       if trait_methods = [] then user_structure
       else begin
         let abstract_types = collect_trait_abstract_types user_structure in
         let ctor_methods = collect_ctor_methods user_structure in
+        let overloads = collect_overloads user_structure in
         (* Each round's rewrite gives the next probe real types for what it
            just dispatched (e.g. `map f m`'s result, an `int array` only
            once `map` is `Mappable__array.map`), which can unlock calls
            depending on it (e.g. `|> println`). Stops once a round changes
            nothing. *)
+        let method_names = List.map (fun (name, _, _, _) -> name) trait_methods in
+        let mono_cache = Hashtbl.create 16 in
+        let mono_counter = ref 0 in
+        (* Once a round changes nothing, monomorphize what's still stuck
+           (see [monomorphize]) and go on: the clones need rounds of their
+           own. Bounded, against e.g. polymorphic recursion cloning forever. *)
         let rec rounds n dict_requirements structure =
           let typed_probe = probe_typecheck env trait_methods structure in
           let dispatch_table, dict_requirements =
-            harvest_dispatch trait_methods abstract_types ctor_methods dict_requirements typed_probe
+            harvest_dispatch trait_methods abstract_types ctor_methods overloads dict_requirements typed_probe
           in
           let rewritten =
             rewrite_dispatch dispatch_table structure |> upgrade_dict_impls dict_requirements abstract_types
           in
-          if n <= 1 || rewritten = structure then rewritten else rounds (n - 1) dict_requirements rewritten
+          if n <= 1 then rewritten
+          else if rewritten <> structure then rounds (n - 1) dict_requirements rewritten
+          else
+            match monomorphize method_names mono_cache mono_counter typed_probe rewritten with
+            | mono, true -> rounds (n - 1) dict_requirements mono
+            | _, false -> rewritten
         in
-        rounds 4 (Hashtbl.create 16) user_structure
+        rounds 32 (Hashtbl.create 16) user_structure |> drop_unused_generics method_names
       end
     in
     let full_structure = (* prelude @ *) user_structure @ [ entry_point ] in
 
     (try ignore (Typemod.type_structure env full_structure)
      with exn ->
-       Location.report_exception Format.err_formatter exn;
+       report_type_error exn;
        exit 1);
     if verbose then print_endline "Typecheck OK";
 
@@ -1255,8 +1877,11 @@ let () =
     if verbose then Printf.printf "Generated OCaml:\n%s\n" ocaml_src;
 
     let base = Filename.remove_extension filename in
-    let ml_file = base ^ ".generated.ml" in
     let exe_file = base ^ ".exe" in
+    (* ocamlopt writes its .cmi/.cmx/.o next to the .ml it compiles: without
+       --keep, that's a throwaway directory, removed afterwards. *)
+    let build_dir = if keep then Filename.dirname filename else Filename.temp_dir "scaml" "" in
+    let ml_file = Filename.concat build_dir (Filename.basename base ^ ".generated.ml") in
     let oc = open_out ml_file in
     output_string oc ocaml_src;
     close_out oc;
@@ -1265,11 +1890,16 @@ let () =
       Printf.sprintf "ocamlfind ocamlopt %s -o %s"
         (Filename.quote ml_file) (Filename.quote exe_file)
     in
-    (match Sys.command cmd with
+    let status = Sys.command cmd in
+    if not keep then begin
+      Array.iter (fun f -> Sys.remove (Filename.concat build_dir f)) (Sys.readdir build_dir);
+      Sys.rmdir build_dir
+    end;
+    (match status with
      | 0 -> Printf.printf "Compiled -> %s\n" exe_file
      | code ->
        Printf.eprintf "ocamlfind ocamlopt failed (exit %d)\n" code;
        exit 1)
   | _ ->
-    Printf.eprintf "Usage: %s [--tokens] [--verbose|-v] <file.scaml>\n" Sys.argv.(0);
+    Printf.eprintf "Usage: %s [--tokens] [--verbose|-v] [--keep|-k] <file.scaml>\n" Sys.argv.(0);
     exit 1
