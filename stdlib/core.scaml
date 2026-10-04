@@ -28,19 +28,39 @@ impl showable of char {
 
 impl showable of bool {
     fn print b { if b then print "true" else print "false" }
-    fn println b { print b; print_newline () }
+    fn println b { print b; scaml_print_newline () }
+}
+
+impl showable of unit {
+    fn print u { print "" }
+    fn println u { scaml_print_newline () }
+}
+
+trait conversionnable {
+    type a
+    fn to_int       of      a -> int
+    fn to_float     of      a -> float
+}
+
+impl conversionnable of int {
+    fn to_int { Fun.id }
+    fn to_float { scaml_float_of_int }
+}
+
+impl conversionnable of float {
+    fn to_int { scaml_int_of_float }
+    fn to_float { Fun.id }
 }
 
 trait arithm {
-    type a
-    op + of a -> a -> a
-    op - of a -> a -> a
-    op * of a -> a -> a
-    op / of a -> a -> a
-    op % of a -> a -> a
+    op + of a -> b -> c
+    op - of a -> b -> c
+    op * of a -> b -> c
+    op / of a -> b -> c
+    op % of a -> b -> c
 }
 
-impl arithm of int {
+impl arithm of int, int {
     op + { scaml_add_int }
     op - { scaml_min_int }
     op * { scaml_tim_int }
@@ -48,7 +68,7 @@ impl arithm of int {
     op % { scaml_mod_int }
 }
 
-impl arithm of float {
+impl arithm of float, float {
     op + { scaml_add_float }
     op - { scaml_min_float }
     op * { scaml_tim_float }
@@ -56,11 +76,29 @@ impl arithm of float {
     op % { scaml_mod_float }
 }
 
+
+impl arithm of float, int {
+    op + f i { f + (to_float i) }
+    op - f i { f - (to_float i) }
+    op * f i { f * (to_float i) }
+    op / f i { f / (to_float i) }
+    op % f i { f % (to_float i) }
+}
+
+impl arithm of int, float {
+    op + i f { (to_float i) + f }
+    op - i f { (to_float i) - f }
+    op * i f { (to_float i) * f }
+    op / i f { (to_float i) / f }
+    op % i f { (to_float i) % f }
+}
+
 op < a b { scaml_lt a b }
-op <= a b { scaml_leq }
+op <= a b { scaml_leq a b }
 op > a b { scaml_gt a b }
 op >= a b { scaml_geq a b }
 op == a b { scaml_eq a b }
+op != a b { scaml_neq a b }
 
 trait iterable {
     type a b
@@ -71,6 +109,11 @@ trait iterable {
 impl iterable of array {
     fn iter { Array.iter }
     fn iteri { Array.iteri }
+}
+
+impl iterable of list {
+    fn iter { List.iter }
+    fn iteri { List.iteri }
 }
 
 impl showable of array {
@@ -86,7 +129,23 @@ impl showable of array {
         print " |]"
     }
 
-    fn println a { print a; print_newline () }
+    fn println a { print a; scaml_print_newline () }
+}
+
+impl showable of list {
+    fn print a {
+        let l = List.length a;
+        print "[ ";
+        iteri (^i e -> { 
+            print e; 
+            if i < (l - 1) 
+            then print "; " 
+            else () 
+        }) a;
+        print " ]"
+    }
+
+    fn println a { print a; scaml_print_newline () }
 }
 
 trait foldable {
@@ -100,25 +159,155 @@ impl foldable of array {
     fn fold_right { Array.fold_right }
 }
 
+impl foldable of list {
+    fn fold_left { List.fold_left }
+    fn fold_right { List.fold_right }
+}
+
 trait mappable {
-    type a b
+    type a b c
     type t of 1
     fn map of (a -> b) -> a t -> b t
     fn mapi of (int -> a -> b) -> a t -> b t
+    fn map2 of (a -> b -> c) -> a t -> b t -> c t
 }
 
 impl mappable of array {
     fn map { Array.map }
     fn mapi { Array.mapi }
+    fn map2 { Array.map2 }
 }
 
-trait sumable {
-    type a b
-    fn sum of a -> b -> a
+impl mappable of list {
+    fn map { List.map }
+    fn mapi { List.mapi }
+    fn map2 { List.map2 }
 }
 
-impl sumable of array {
-    fn sum acc arr { Array.fold_left (+) acc arr }
-}
+fn sum acc c { fold_left (+) acc c }
 
 op |> f g { g f }
+op :: x xs { scaml_list_cons x xs }
+
+type a btree {
+    Leaf | Node of a btree, a, a btree
+}
+
+impl foldable of btree {
+    fn fold_left f acc t {
+        fn go acc t {
+            match t {
+                | Leaf -> acc
+                | Node (l, v, r) -> go (f (go acc l) v) r
+            }
+        }
+        go acc t
+    }
+
+    fn fold_right f t acc {
+        fn go t acc {
+            match t {
+                | Leaf -> acc
+                | Node (l, v, r) -> go l (f v (go r acc))
+            }
+        }
+        go t acc
+    }
+}
+
+impl arithm of string, string {
+    op + { scaml_concat_string }
+}
+
+impl arithm of string, int {
+    op * a b {
+        fn aux n acc {
+            if n == 0 then acc else aux (n-1) (a + acc)
+        }
+        aux b a
+    }
+}
+
+impl arithm of int, string {
+    op * a b { b * a }
+}
+
+impl arithm of array, int {
+    op + arr el { map (^x -> x + el) arr }
+    op - arr el { map (^x -> x - el) arr }
+    op * arr el { map (^x -> x * el) arr }
+    op / arr el { map (^x -> x / el) arr }
+    op % arr el { map (^x -> x % el) arr }
+}
+
+impl arithm of array, float {
+    op + arr el { map (^x -> x + el) arr }
+    op - arr el { map (^x -> x - el) arr }
+    op * arr el { map (^x -> x * el) arr }
+    op / arr el { map (^x -> x / el) arr }
+    op % arr el { map (^x -> x % el) arr }
+}
+
+impl arithm of int, array {
+    op + el arr { map (^x -> el + x) arr }
+    op - el arr { map (^x -> el - x) arr }
+    op * el arr { map (^x -> el * x) arr }
+    op / el arr { map (^x -> el / x) arr }
+    op % el arr { map (^x -> el % x) arr }
+}
+
+impl arithm of float, array {
+    op + el arr { map (^x -> el + x) arr }
+    op - el arr { map (^x -> el - x) arr }
+    op * el arr { map (^x -> el * x) arr }
+    op / el arr { map (^x -> el / x) arr }
+    op % el arr { map (^x -> el % x) arr }
+}
+
+impl arithm of array, array {
+    op + l1 l2 { map2 (+) l1 l2 }
+    op - l1 l2 { map2 (-) l1 l2 }
+    op * l1 l2 { map2 (*) l1 l2 }
+    op / l1 l2 { map2 (/) l1 l2 }
+    op % l1 l2 { map2 (%) l1 l2 }
+}
+
+impl arithm of list, int {
+    op + arr el { map (^x -> x + el) arr }
+    op - arr el { map (^x -> x - el) arr }
+    op * arr el { map (^x -> x * el) arr }
+    op / arr el { map (^x -> x / el) arr }
+    op % arr el { map (^x -> x % el) arr }
+}
+
+impl arithm of list, float {
+    op + arr el { map (^x -> x + el) arr }
+    op - arr el { map (^x -> x - el) arr }
+    op * arr el { map (^x -> x * el) arr }
+    op / arr el { map (^x -> x / el) arr }
+    op % arr el { map (^x -> x % el) arr }
+}
+
+impl arithm of int, list {
+    op + el arr { map (^x -> el + x) arr }
+    op - el arr { map (^x -> el - x) arr }
+    op * el arr { map (^x -> el * x) arr }
+    op / el arr { map (^x -> el / x) arr }
+    op % el arr { map (^x -> el % x) arr }
+}
+
+impl arithm of float, list {
+    op + el arr { map (^x -> el + x) arr }
+    op - el arr { map (^x -> el - x) arr }
+    op * el arr { map (^x -> el * x) arr }
+    op / el arr { map (^x -> el / x) arr }
+    op % el arr { map (^x -> el % x) arr }
+}
+
+impl arithm of list, list {
+    op + l1 l2 { map2 (+) l1 l2 }
+    op - l1 l2 { map2 (-) l1 l2 }
+    op * l1 l2 { map2 (*) l1 l2 }
+    op / l1 l2 { map2 (/) l1 l2 }
+    op % l1 l2 { map2 (%) l1 l2 }
+}

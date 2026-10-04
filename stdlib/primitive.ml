@@ -1,3 +1,8 @@
+(* List *)
+let scaml_list_cons x xs = x :: xs
+(* CONVERSION *)
+let scaml_int_of_float = int_of_float
+let scaml_float_of_int = float_of_int
 (* ARITHM *)
 let scaml_add_int = ( + )
 let scaml_min_int = ( - )
@@ -26,3 +31,4 @@ let scaml_leq = (<=)
 let scaml_gt = (>)
 let scaml_geq = (>=)
 let scaml_eq = (=)
+let scaml_neq = (!=)
