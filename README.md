@@ -41,6 +41,10 @@ dune exec bin/main.exe -- examples/hello.scaml
 This prints the inferred type, the generated OCaml source, then compiles and
 runs it.
 
+By default only the executable (`examples/hello.exe`) is written next to the
+source. Pass `--keep` (or `-k`) to also keep the intermediate files there:
+`hello.generated.ml`, `.cmi`, `.cmx` and `.o`.
+
 ## Extending the language
 
 1. Add new keywords/operators in `lib/lexer.mll`.
