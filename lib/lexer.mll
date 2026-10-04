@@ -12,7 +12,7 @@ let alnum = alpha | digit
 let ident = alpha alnum*
 let uindent = ['A'-'Z'] alnum*
 let qualified_ident = (uindent '.')+ ident
-let symbols = ['+' '-' '*' '/' '<' '>' ':' '%' '.' '|' '=' '&' '!' ]
+let symbols = ['+' '-' '*' '/' '<' '>' ':' '%' '.' '|' '=' '&' '!' '@']
 let custom_sym = symbols+
 let whitespace = [' ' '\t' '\r']
 let newline = '\n'
@@ -22,6 +22,12 @@ rule raw_token = parse
   | "//" [^ '\n']* { raw_token lexbuf }
   | newline { Lexing.new_line lexbuf; raw_token lexbuf }
   | int as n { INT (int_of_string n) }
+  (* `0..2`: longer than the float `0.`, so this wins; the `..` is then put
+     back to be lexed as the next token (an operator), leaving just `0`. *)
+  | (int as n) ".."
+      { lexbuf.lex_curr_pos <- lexbuf.lex_curr_pos - 2;
+        lexbuf.lex_curr_p <- { lexbuf.lex_curr_p with pos_cnum = lexbuf.lex_curr_p.pos_cnum - 2 };
+        INT (int_of_string n) }
   | float as f { FLOAT f } (* Ast helper take a string and not a float *)
   | '\'' (['a'-'z' 'A'-'Z'] as c) '\'' { CHAR c }
   | "->" { ARROW }

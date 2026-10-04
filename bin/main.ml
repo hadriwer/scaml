@@ -125,18 +125,22 @@ let referenced (item : Parsetree.structure_item) : (string * string option) list
    kept module using exactly the members its own keepers actually needed. *)
 let reachable (extra_roots : string list) (items : Parsetree.structure_item list) =
   let indexed = List.mapi (fun i item -> (i, item, provided_names item, referenced item)) items in
+  (* Several items may provide the same name (two types both with a `One`
+     constructor, a value shadowing another...): a reference keeps them all,
+     since telling which one it means would take OCaml's own scoping and
+     type-directed disambiguation. Keeping one too many is harmless. *)
   let provider_of_name : (string, int) Hashtbl.t = Hashtbl.create 64 in
-  List.iter (fun (i, _, provided, _) -> List.iter (fun n -> Hashtbl.replace provider_of_name n i) provided) indexed;
+  List.iter (fun (i, _, provided, _) -> List.iter (fun n -> Hashtbl.add provider_of_name n i) provided) indexed;
   let kept = Hashtbl.create 64 in
   let rec visit i =
     if not (Hashtbl.mem kept i) then begin
       Hashtbl.add kept i ();
       let (_, _, _, refs) = List.nth indexed i in
-      List.iter (fun (n, _) -> match Hashtbl.find_opt provider_of_name n with Some j -> visit j | None -> ()) refs
+      List.iter (fun (n, _) -> List.iter visit (Hashtbl.find_all provider_of_name n)) refs
     end
   in
   List.iter (fun (i, _, provided, _) -> if provided = [] then visit i) indexed;
-  List.iter (fun n -> match Hashtbl.find_opt provider_of_name n with Some j -> visit j | None -> ()) extra_roots;
+  List.iter (fun n -> List.iter visit (Hashtbl.find_all provider_of_name n)) extra_roots;
   List.filter_map (fun (i, item, _, refs) -> if Hashtbl.mem kept i then Some (item, refs) else None) indexed
 
 (* A kept module's body, pruned to just the members [needed] (collected from
@@ -323,6 +327,7 @@ let known_type_name (path : Path.t) =
   else if Path.same path Predef.path_unit then Some "unit"
   else if Path.same path Predef.path_array then Some "array"
   else if Path.same path Predef.path_list then Some "list"
+  else if Path.same path Predef.path_option then Some "option"
   else None
 
 (* Just the outermost constructor's name (`array` for `'a array`, whose
@@ -332,8 +337,92 @@ let head_type_name (env : Env.t) (ty : Types.type_expr) =
   | Tconstr (path, _, _) -> known_type_name path
   | _ -> None
 
+(* Tuples have no named constructor to write an `impl showable of ...`
+   for, and an impl written in SCaml gets a single dictionary while a tuple
+   needs one per component. So their `showable` is generated here instead,
+   directly in OCaml, as functors taking one `showable` per component
+   (`Showable__tuple2 (A : showable) (B : showable)`), inserted right after
+   the stdlib's `showable` trait. A call on a tuple then dispatches to that
+   functor applied to its components' impls (see [DictCall]). *)
+let tuple_sizes = [ 2; 3; 4; 5; 6 ]
+
+let tuple_impls : (string, unit) Hashtbl.t = Hashtbl.create 8
+
+let tuple_showable_source n =
+  let comps = List.init n (fun i -> i) in
+  let params = String.concat " " (List.map (fun i -> Printf.sprintf "(M%d : showable)" i) comps) in
+  let ty = String.concat " * " (List.map (fun i -> Printf.sprintf "M%d.a" i) comps) in
+  let pat = String.concat ", " (List.map (fun i -> Printf.sprintf "x%d" i) comps) in
+  let prints =
+    String.concat "; scaml_print_string \", \"; "
+      (List.map (fun i -> Printf.sprintf "M%d.print x%d" i i) comps)
+  in
+  Printf.sprintf
+    "module Showable__tuple%d %s = struct\n\
+    \  type a = %s\n\
+    \  let print ((%s) : a) = scaml_print_string \"(\"; %s; scaml_print_string \")\"\n\
+    \  let println (v : a) = print v; scaml_print_newline ()\n\
+     end\n"
+    n params ty pat prints
+
+(* [stdlib] with the tuple functors inserted after its `showable` trait
+   (unchanged if there's no such trait). *)
+let with_tuple_impls (stdlib : Parsetree.structure) : Parsetree.structure =
+  List.concat_map
+    (fun (item : Parsetree.structure_item) ->
+      match item.pstr_desc with
+      | Pstr_modtype { pmtd_name = { txt = "showable"; _ }; _ } ->
+        let generated =
+          List.concat_map
+            (fun n ->
+              Hashtbl.replace tuple_impls (Printf.sprintf "Showable__tuple%d" n) ();
+              Parse.implementation (Lexing.from_string (tuple_showable_source n)))
+            tuple_sizes
+        in
+        item :: generated
+      | _ -> [ item ])
+    stdlib
+
+(* Set only for a last-resort dispatch pass (see the end of the pipeline):
+   a type variable nothing constrains (`'a` in `last []`'s `'a option`) is
+   classified as `unit`. Sound since no value of such a type can exist (the
+   option can only be `None`), but only tried once normal dispatch has left
+   something unresolved, and kept only if the result type-checks. *)
+let default_free_type_vars = ref false
+
+(* The type variables appearing in the type of some `let`/`fn` binding of
+   the current probe (e.g. the parameter type of a generic `length`):
+   those are genuinely polymorphic and must stay so, to be cloned per use.
+   Filled by [protect_bound_vars] before each last-resort round. *)
+let protected_vars : Types.type_expr list ref = ref []
+
+let protect_bound_vars (typed : Typedtree.structure) =
+  let found = ref [] in
+  let value_binding it (vb : Typedtree.value_binding) =
+    found := Ctype.free_variables vb.vb_pat.pat_type @ !found;
+    Tast_iterator.default_iterator.value_binding it vb
+  in
+  let it = { Tast_iterator.default_iterator with value_binding } in
+  it.structure it typed;
+  protected_vars := !found
+
+(* Only a variable that is free for real -- the `'a` of `length []` inside
+   `main`, which appears in no binding's type -- never one that some
+   binding is polymorphic in. (Levels can't tell them apart: OCaml
+   generalizes every variable created inside a top-level definition.) *)
+let defaultable (ty : Types.type_expr) =
+  !default_free_type_vars && not (List.exists (Types.eq_type ty) !protected_vars)
+
 let rec classify_texpr (env : Env.t) (ty : Types.type_expr) : type_tree option =
-  match Types.get_desc (Ctype.expand_head env ty) with
+  let ty = Ctype.expand_head env ty in
+  match Types.get_desc ty with
+  | Tvar _ when defaultable ty -> Some (Ty ("unit", []))
+  (* `a * b` reads as a two-parameter `tuple2` (see [tuple_impls]). *)
+  | Ttuple components ->
+    let classified = List.map (fun (_, t) -> classify_texpr env t) components in
+    if List.for_all Option.is_some classified then
+      Some (Ty (Printf.sprintf "tuple%d" (List.length components), List.map Option.get classified))
+    else None
   | Tconstr (path, args, _) ->
     let name = known_type_name path in
     (match name with
@@ -462,6 +551,16 @@ let collect_trait_abstract_types (structure : Parsetree.structure) : (string, st
 type concrete_ref =
   | Concrete of string
   | ViaX of string
+  (* A full type with its arguments (`int list` for a fold's `acc`), not
+     just a head name, which on its own (`type acc = list`) isn't a type. *)
+  | ConcreteTree of type_tree
+
+(* [tree] as a type expression: `Ty ("list", [Ty ("int", [])])` is `int
+   list`, a `tupleN` is a tuple. *)
+let rec core_of_tree loc (Ty (n, args)) : Parsetree.core_type =
+  let args = List.map (core_of_tree loc) args in
+  if String.length n > 5 && String.sub n 0 5 = "tuple" then Ast_helper.Typ.tuple ~loc (List.map (fun t -> (None, t)) args)
+  else Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident n) loc) args
 
 (* The argument a functor-shaped impl is applied to at a call site: either a
    fresh anonymous struct binding each "other" type field (the common
@@ -490,6 +589,9 @@ type dispatch_target =
   | Functored of string * functor_arg
   | ViaDictParam of string
   | Overload of string
+  (* A whole dictionary built at the call site, e.g. `Showable__tuple2
+     (Showable__string) (Showable__int)` for `println ("a", 1)`. *)
+  | DictCall of dict_module
 
 (* Identifies a source span well enough to match the same node between the
    probe's Typedtree and the original Parsetree (both come from the exact
@@ -673,12 +775,11 @@ let harvest_dispatch
     let mod_name = impl_module_name trait_name type_name in
     let params = all_param_names other_names (List.length arg_type_names) in
     (* A "free" other name (e.g. `foldable`'s `acc`) isn't part
-       of the self type's own structure, so it can't be
-       classified from [arg_type_names] the way tied names are
-       -- it's resolved independently, from whatever argument,
-       at this exact call, actually plays that role (e.g. the
-       `0` in `fold_left (+) 0 arr`), found the same way
-       [self_pos] above found the self argument. *)
+       of the self type's own structure: impls are polymorphic in
+       it (see lib/parser.mly's IMPL rule), so it's never passed
+       to their functor. It's still resolved here when this call
+       shows it (e.g. the `0` in `fold_left (+) 0 arr`), only to
+       dispatch a bare callback argument typed by it, below. *)
     let free_names, _tied_names = split_other_names other_names (List.length arg_type_names) in
     let free_values =
       List.filter_map
@@ -692,7 +793,8 @@ let harvest_dispatch
                (match List.nth_opt arg_tys i with
                 | Some (arg_env, arg_ty) ->
                   (match classify_texpr arg_env arg_ty with
-                   | Some (Ty (tn, _)) -> Some (fn, Concrete tn)
+                   | Some (Ty (tn, [])) -> Some (fn, Concrete tn)
+                   | Some tree -> Some (fn, ConcreteTree tree)
                    | None -> None)
                 | None -> None)
              | None -> None)
@@ -700,9 +802,15 @@ let harvest_dispatch
         free_names
     in
     let target =
-      if params = [] && free_values = [] then Some (Plain mod_name)
+      if params = [] then Some (Plain mod_name)
       else if List.length params = List.length arg_type_names then
-        let full_fields = free_values @ List.combine params (List.map (fun n -> Concrete n) arg_type_names) in
+        (* The full element type (`int list`, `int * int`), not just its
+           head name, which alone (`type a = tuple2`) isn't a type. *)
+        let field_of (Ty (n, args) as tree) =
+          if args = [] && not (Hashtbl.mem tuple_impls (impl_module_name "showable" n)) then Concrete n
+          else ConcreteTree tree
+        in
+        let full_fields = List.combine params (List.map field_of arg_trees) in
         (* The whole functor argument is itself a dictionary when
            it has exactly one field overall (whether that field
            is "tied" to the self type, like `sumable`'s `a`, or
@@ -725,7 +833,7 @@ let harvest_dispatch
           Dict (dict_mod, List.map (dict_of sub_trait) args)
         in
         (match full_fields, Hashtbl.find_opt dict_requirements mod_name, arg_trees with
-         | [ (only_field, Concrete _) ], Some (dict_field, needed_trait), [ elem_tree ]
+         | [ (only_field, (Concrete _ | ConcreteTree _)) ], Some (dict_field, needed_trait), [ elem_tree ]
            when dict_field = only_field ->
            Some (Functored (mod_name, DictModule (dict_of needed_trait elem_tree)))
          | [ (only_field, Concrete concrete_type) ], Some (dict_field, needed_trait), _ when dict_field = only_field ->
@@ -839,6 +947,22 @@ let harvest_dispatch
                      | Tconstr (apath, [], _) ->
                        (match path_is_x_field apath with Some field -> `ContainerX (container, field) | None -> `None)
                      | _ -> `None)
+                  (* A tuple mixing known types and the enclosing impl's own
+                     element type (`print (i, a)` inside `showable of rle`,
+                     an `int * X.a`): each component known or that field. *)
+                  | Ttuple components ->
+                    let comps =
+                      List.map
+                        (fun (_, t) ->
+                          match classify_texpr a.exp_env t with
+                          | Some tree -> Some (`Known tree)
+                          | None ->
+                            (match Types.get_desc (Ctype.expand_head a.exp_env t) with
+                             | Tconstr (p, [], _) -> Option.map (fun f -> `Field f) (path_is_x_field p)
+                             | _ -> None))
+                        components
+                    in
+                    if List.for_all Option.is_some comps then `TupleX (List.map Option.get comps) else `None
                   | _ -> `None)
              in
              let self_pos = self_pos_of name trait_name arity in
@@ -853,6 +977,16 @@ let harvest_dispatch
                  scan dispatch_args
              in
              (match self_result with
+              | `Concrete (type_name, arg_trees) when Hashtbl.mem tuple_impls (impl_module_name trait_name type_name) ->
+                (* A generated tuple impl: the functor applied, right here, to
+                   each component's own dictionary (recursively, so a tuple
+                   of arrays or of tuples works too). *)
+                let rec dict_for trait (Ty (n, args)) =
+                  let m = impl_module_name trait n in
+                  let sub = match Hashtbl.find_opt dict_requirements m with Some (_, t) -> t | None -> trait in
+                  Dict (m, List.map (dict_for sub) args)
+                in
+                Hashtbl.replace table (loc_key head.exp_loc) (DictCall (dict_for trait_name (Ty (type_name, arg_trees))))
               | `Concrete (type_name, arg_trees) ->
                 let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) dispatch_args in
                 let mod_name, free_values, target = concrete_target name trait_name arity arg_tys type_name arg_trees in
@@ -874,7 +1008,7 @@ let harvest_dispatch
                 let self_name = self_name_of trait_name in
                 let concrete_of_abstract =
                   (match self_name with Some s -> [ (s, type_name) ] | None -> [])
-                  @ List.filter_map (function n, Concrete t -> Some (n, t) | _, ViaX _ -> None) free_values
+                  @ List.filter_map (function n, Concrete t -> Some (n, t) | n, ConcreteTree t -> Some (n, ty_name t) | _, ViaX _ -> None) free_values
                   @ (try List.combine _tied_names arg_type_names with Invalid_argument _ -> [])
                 in
                 (match Hashtbl.find_opt domains_of_name name with
@@ -899,6 +1033,30 @@ let harvest_dispatch
                        | _ -> ())
                      domains
                  | None -> ())
+              | `TupleX comps when Hashtbl.mem tuple_impls (impl_module_name trait_name (Printf.sprintf "tuple%d" (List.length comps))) ->
+                (* Like a concrete tuple (see the generated tuple impls), but
+                   a component of the impl's own element type takes its
+                   dictionary from the impl's functor parameter `X` itself,
+                   which [upgrade_dict_impls] then turns into that trait. *)
+                let rec dict_for trait (Ty (n, args)) =
+                  let m = impl_module_name trait n in
+                  let sub = match Hashtbl.find_opt dict_requirements m with Some (_, t) -> t | None -> trait in
+                  Dict (m, List.map (dict_for sub) args)
+                in
+                let comp_dicts =
+                  List.map
+                    (function
+                      | `Known tree -> dict_for trait_name tree
+                      | `Field field ->
+                        (match !current_impl_module with
+                         | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
+                         | None -> ());
+                        Dict ("X", []))
+                    comps
+                in
+                Hashtbl.replace table (loc_key head.exp_loc)
+                  (DictCall (Dict (impl_module_name trait_name (Printf.sprintf "tuple%d" (List.length comps)), comp_dicts)))
+              | `TupleX _ -> ()
               | `DirectX field ->
                 (* `print e` where [e]'s type is *directly* the enclosing
                    impl's own abstract padding field: needs a value, not
@@ -1059,6 +1217,18 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
          let qualified = Option.get (Longident.unflatten [ "X"; method_name ]) in
          { e with pexp_desc = Pexp_ident (Location.mkloc qualified e.pexp_loc) }
        | Some (Overload fname) -> { e with pexp_desc = Pexp_ident (Location.mkloc (Longident.Lident fname) e.pexp_loc) }
+       | Some (DictCall dict) ->
+         let loc = e.pexp_loc in
+         let fresh = fresh_dispatch_module_name () in
+         let rec mod_of (Dict (name, args)) =
+           List.fold_left
+             (fun acc a -> Ast_helper.Mod.apply ~loc acc (mod_of a))
+             (Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident name) loc))
+             args
+         in
+         Ast_helper.Exp.struct_item ~loc
+           (Ast_helper.Str.module_ ~loc (Ast_helper.Mb.mk ~loc (Location.mkloc (Some fresh) loc) (mod_of dict)))
+           (Ast_helper.Exp.ident ~loc (Location.mkloc (Option.get (Longident.unflatten [ fresh; name ])) loc))
        | Some (Functored (mod_name, arg)) ->
          let loc = e.pexp_loc in
          let fresh = fresh_dispatch_module_name () in
@@ -1076,15 +1246,17 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
              Ast_helper.Mod.structure ~loc
                (List.map
                   (fun (field_name, cref) ->
-                    let ty_lid =
+                    let manifest =
                       match cref with
-                      | Concrete type_name -> Longident.Lident type_name
-                      | ViaX field -> Longident.Ldot (Location.mkloc (Longident.Lident "X") loc, Location.mkloc field loc)
+                      | Concrete type_name -> Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident type_name) loc) []
+                      | ViaX field ->
+                        Ast_helper.Typ.constr ~loc
+                          (Location.mkloc (Longident.Ldot (Location.mkloc (Longident.Lident "X") loc, Location.mkloc field loc)) loc)
+                          []
+                      | ConcreteTree tree -> core_of_tree loc tree
                     in
                     Ast_helper.Str.type_ ~loc Asttypes.Recursive
-                      [ Ast_helper.Type.mk ~loc
-                          ~manifest:(Ast_helper.Typ.constr ~loc (Location.mkloc ty_lid loc) [])
-                          (Location.mkloc field_name loc) ])
+                      [ Ast_helper.Type.mk ~loc ~manifest (Location.mkloc field_name loc) ])
                   fields)
          in
          let functor_app =
@@ -1372,6 +1544,8 @@ let probe_typecheck env (methods : (string * string * string list * (string * in
   match Typemod.type_structure env probe_structure with
   | (typedtree, _, _, _, _) -> typedtree
   | exception exn ->
+    (* The last-resort pass handles its own failure (falls back). *)
+    if !default_free_type_vars then raise exn;
     report_type_error exn;
     exit 1
 
@@ -1468,6 +1642,10 @@ let rec core_of_type (env : Env.t) (ty : Types.type_expr) : Parsetree.core_type 
       (match Longident.unflatten (String.split_on_char '.' name), all (List.map core_of_type args) with
        | Some lid, Some cargs -> Some (Ast_helper.Typ.constr ~loc (Location.mkloc lid loc) cargs)
        | _ -> None)
+  (* Same last-resort reading as [classify_texpr]'s: lets e.g. `length []`
+     get a clone for `unit list`. *)
+  | Tvar _ when defaultable (Ctype.expand_head env ty) ->
+    Some (Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident "unit") loc) [])
   | _ -> None
 
 (* [e] with its first parameters annotated with [tys], in order. *)
@@ -1669,16 +1847,56 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
    One still in use is kept, so the final type-check reports the real
    problem (its unresolved call) rather than a missing function. Local
    ones (`let f = .. in body`) likewise, when [body] no longer uses [f]. *)
-let drop_unused_generics (method_names : string list) (structure : Parsetree.structure) =
+(* The top-level bindings (by their pattern's location) that some *other*
+   item really refers to, according to OCaml's own scoping on a probe
+   typecheck: unlike comparing names, a local variable that merely shares a
+   top-level function's name (the stdlib's `op |> f g { g f }` vs a user's
+   `fn f`) doesn't count as a use of it. *)
+let used_toplevel_bindings env methods (structure : Parsetree.structure) =
+  let typed = probe_typecheck env methods structure in
+  let owners = ref [] in
+  List.iteri
+    (fun i (item : Typedtree.structure_item) ->
+      match item.str_desc with
+      | Tstr_value (_, vbs) ->
+        List.iter
+          (fun (vb : Typedtree.value_binding) ->
+            (* Keyed by the bound name's own location: a pattern's location
+               may well be `Location.none` (lib/parser.mly's [mkfn]). *)
+            match vb.vb_pat.pat_desc with
+            | Tpat_var (id, name, _) -> owners := (id, (i, loc_key name.loc)) :: !owners
+            | _ -> ())
+          vbs
+      | _ -> ())
+    typed.str_items;
+  let used = Hashtbl.create 16 in
+  List.iteri
+    (fun i item ->
+      let expr it (e : Typedtree.expression) =
+        (match e.exp_desc with
+         | Texp_ident (Path.Pident id, _, _) ->
+           (match List.find_opt (fun (id', _) -> Ident.same id id') !owners with
+            | Some (_, (j, key)) when j <> i -> Hashtbl.replace used key ()
+            | _ -> ())
+         | _ -> ());
+        Tast_iterator.default_iterator.expr it e
+      in
+      let it = { Tast_iterator.default_iterator with expr } in
+      it.structure_item it item)
+    typed.str_items;
+  used
+
+let drop_unused_generics env methods (method_names : string list) (structure : Parsetree.structure) =
   let mentions name (e : Parsetree.expression) = has_unresolved_trait_call [ name ] e in
   let rec go structure =
     let generic_names = generic_functions method_names structure in
-    let droppable item =
-      match simple_binding item with
-      | Some (name, e) ->
+    let used = used_toplevel_bindings env methods structure in
+    let droppable (item : Parsetree.structure_item) =
+      match simple_binding item, item.pstr_desc with
+      | Some (name, e), Pstr_value (_, [ { pvb_pat = { ppat_desc = Ppat_var { loc = name_loc; _ }; _ }; _ } ]) ->
         name <> "main" && fun_arity e > 0 && List.mem name generic_names
-        && not (List.exists (fun other -> other != item && List.mem name (List.map fst (referenced other))) structure)
-      | None -> false
+        && not (Hashtbl.mem used (loc_key name_loc))
+      | _ -> false
     in
     let kept = List.filter (fun item -> not (droppable item)) structure in
     if List.length kept = List.length structure then structure else go kept
@@ -1751,38 +1969,122 @@ let load_stdlib () : Parsetree.structure =
     |> List.concat_map (fun f -> parse_scaml_file (Filename.concat stdlib_dir f))
   else []
 
-(* The user's file is compiled in one structure with the stdlib, and the
-   passes above (dead-code elimination, generics, monomorphization) tell
-   top-level functions apart by name alone: redefining e.g. `sum` makes them
-   mix the two up and fail far away, with an "Unbound value op___0___" inside
-   the stdlib. Rejected up front instead, at the user's own definition. *)
-let check_no_stdlib_redefinition (stdlib : Parsetree.structure) (user : Parsetree.structure) =
-  let bindings structure =
+(* Overriding a stdlib function or operator is allowed, with a warning.
+
+   Functions: the user's file is compiled in one structure with the stdlib,
+   and the passes above (dead-code elimination, generics, monomorphization)
+   tell top-level functions apart by name alone, so two `sum`s would get
+   mixed up (failing far away, with an "Unbound value op___0___" inside the
+   stdlib). The stdlib's own definition is therefore renamed (`sum` ->
+   `sum__stdlib`), along with every use of it inside the stdlib, and in the
+   user's file before the override (which, as in OCaml, still mean the
+   stdlib's). Operators already get a fresh internal name per definition
+   (`op___N___`), so they only get the warning.
+
+   Returns both structures, renamed. *)
+let warn_stdlib_overrides (stdlib : Parsetree.structure) (user : Parsetree.structure) =
+  let bindings (item : Parsetree.structure_item) =
+    match item.pstr_desc with
+    | Pstr_value (_, vbs) ->
+      List.filter_map
+        (fun (vb : Parsetree.value_binding) ->
+          match vb.pvb_pat.ppat_desc with
+          | Ppat_var { txt; loc } -> Some (txt, loc)
+          | _ -> None)
+        vbs
+    | _ -> []
+  in
+  let symbol_of fn = Hashtbl.find_opt SCaml.Op_names.symbol_of_fn fn in
+  let warn loc what stdlib_loc =
+    Location.print_report Format.err_formatter
+      { Location.kind = Report_warning "stdlib-override";
+        main = Location.msg ~loc "%s overrides the stdlib's definition" what;
+        sub = [ Location.msg ~loc:stdlib_loc "the stdlib's definition is here" ];
+        footnote = None }
+  in
+  (* The stdlib's operators, by symbol: top-level `op`s and trait ones. *)
+  let stdlib_ops =
     List.concat_map
       (fun (item : Parsetree.structure_item) ->
         match item.pstr_desc with
-        | Pstr_value (_, vbs) ->
+        | Pstr_modtype { pmtd_type = Some { pmty_desc = Pmty_signature sigs; _ }; _ } ->
           List.filter_map
-            (fun (vb : Parsetree.value_binding) ->
-              match vb.pvb_pat.ppat_desc with
-              | Ppat_var { txt; loc } -> Some (txt, loc)
+            (fun (s : Parsetree.signature_item) ->
+              match s.psig_desc with
+              | Psig_value vd ->
+                (* A trait's generated signature may carry no location of its
+                   own: point at the trait then. *)
+                let loc = if vd.pval_loc = Location.none then item.pstr_loc else vd.pval_loc in
+                Option.map (fun sym -> (sym, loc)) (symbol_of vd.pval_name.txt)
               | _ -> None)
-            vbs
-        | _ -> [])
-      structure
+            sigs
+        | _ -> List.filter_map (fun (n, loc) -> Option.map (fun sym -> (sym, loc)) (symbol_of n)) (bindings item))
+      stdlib
   in
-  let stdlib_names = bindings stdlib in
-  List.iter
-    (fun (name, loc) ->
-      match List.assoc_opt name stdlib_names with
-      | None -> ()
-      | Some stdlib_loc ->
-        Location.print_report Format.err_formatter
-          (Location.error ~loc
-             ~sub:[ Location.msg ~loc:stdlib_loc "`%s` is defined here in the stdlib" name ]
-             (Printf.sprintf "`%s` is already defined by the stdlib; choose another name" name));
-        exit 1)
-    (bindings user)
+  let stdlib_fns =
+    List.concat_map bindings stdlib |> List.filter (fun (n, _) -> symbol_of n = None)
+  in
+  let rename_refs renames =
+    let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) =
+      match e.pexp_desc with
+      | Pexp_ident ({ txt = Longident.Lident n; _ } as lid) when List.mem_assoc n renames ->
+        { e with pexp_desc = Pexp_ident { lid with txt = Longident.Lident (List.assoc n renames) } }
+      | _ -> Ast_mapper.default_mapper.expr m e
+    in
+    let pat (m : Ast_mapper.mapper) (p : Parsetree.pattern) =
+      match p.ppat_desc with
+      | Ppat_var ({ txt = n; _ } as v) when List.mem_assoc n renames ->
+        { p with ppat_desc = Ppat_var { v with txt = List.assoc n renames } }
+      | _ -> Ast_mapper.default_mapper.pat m p
+    in
+    { Ast_mapper.default_mapper with expr; pat }
+  in
+  (* First pass: which stdlib names the user's file overrides, and at which
+     item (the first definition wins; later ones are plain OCaml shadowing). *)
+  let overrides = ref [] in
+  List.iteri
+    (fun i item ->
+      List.iter
+        (fun (n, loc) ->
+          match symbol_of n with
+          | Some sym ->
+            (match List.assoc_opt sym stdlib_ops with
+             | Some stdlib_loc -> warn loc (Printf.sprintf "Operator `%s`" sym) stdlib_loc
+             | None -> ())
+          | None ->
+            (match List.assoc_opt n stdlib_fns with
+             | Some stdlib_loc when not (List.mem_assoc n !overrides) ->
+               warn loc (Printf.sprintf "`%s`" n) stdlib_loc;
+               overrides := (n, i) :: !overrides
+             | _ -> ()))
+        (bindings item))
+    user;
+  let renames = List.map (fun (n, _) -> (n, n ^ "__stdlib")) !overrides in
+  (* Second pass: in each user item, a name overridden only further down
+     still means the stdlib's one, as does the overriding item's own name
+     inside its own body unless it's recursive. *)
+  let user' =
+    List.mapi
+      (fun i (item : Parsetree.structure_item) ->
+        let is_rec = match item.pstr_desc with Pstr_value (Recursive, _) -> true | _ -> false in
+        let still_stdlib =
+          List.filter_map
+            (fun (n, j) -> if j > i || (j = i && not is_rec) then Some (n, n ^ "__stdlib") else None)
+            !overrides
+        in
+        if still_stdlib = [] then item
+        else
+          let m = rename_refs still_stdlib in
+          match item.pstr_desc with
+          (* Only the bodies: the names an item binds are the user's own. *)
+          | Pstr_value (rf, vbs) ->
+            let vbs = List.map (fun (vb : Parsetree.value_binding) -> { vb with pvb_expr = m.expr m vb.pvb_expr }) vbs in
+            { item with pstr_desc = Pstr_value (rf, vbs) }
+          | _ -> m.structure_item m item)
+      user
+  in
+  let stdlib' = if renames = [] then stdlib else (rename_refs renames).structure (rename_refs renames) stdlib in
+  (stdlib', user')
 
 let () =
   let args = List.tl (Array.to_list Sys.argv) in
@@ -1809,9 +2111,9 @@ let () =
        *before* the user's own file is parsed, or the user's file's own
        `+`/`-`/... would fall back to plain OCaml's native (monomorphic)
        operators instead of the trait-dispatched ones. *)
-    let stdlib_structure = load_stdlib () in
+    let stdlib_structure = with_tuple_impls (load_stdlib ()) in
     let user_file_structure = parse_scaml_file filename in
-    check_no_stdlib_redefinition stdlib_structure user_file_structure;
+    let stdlib_structure, user_file_structure = warn_stdlib_overrides stdlib_structure user_file_structure in
     let user_structure = stdlib_structure @ user_file_structure in
 
     if not (has_main user_structure) then begin
@@ -1841,11 +2143,16 @@ let () =
         (* Once a round changes nothing, monomorphize what's still stuck
            (see [monomorphize]) and go on: the clones need rounds of their
            own. Bounded, against e.g. polymorphic recursion cloning forever. *)
+        (* The latest requirements, so a later pass over the result can go
+           on from them instead of starting from scratch. *)
+        let last_dict_requirements = ref (Hashtbl.create 16) in
         let rec rounds n dict_requirements structure =
           let typed_probe = probe_typecheck env trait_methods structure in
+          if !default_free_type_vars then protect_bound_vars typed_probe;
           let dispatch_table, dict_requirements =
             harvest_dispatch trait_methods abstract_types ctor_methods overloads dict_requirements typed_probe
           in
+          last_dict_requirements := dict_requirements;
           let rewritten =
             rewrite_dispatch dispatch_table structure |> upgrade_dict_impls dict_requirements abstract_types
           in
@@ -1856,7 +2163,27 @@ let () =
             | mono, true -> rounds (n - 1) dict_requirements mono
             | _, false -> rewritten
         in
-        rounds 32 (Hashtbl.create 16) user_structure |> drop_unused_generics method_names
+        let resolved = rounds 32 (Hashtbl.create 16) user_structure |> drop_unused_generics env trait_methods method_names in
+        let typechecks s =
+          match Typemod.type_structure env (s @ [ entry_point ]) with _ -> true | exception _ -> false
+        in
+        if typechecks resolved then resolved
+        else begin
+          (* Something is still unresolved, e.g. `println (last [])`, whose
+             element type nothing fixes: retry with such free type variables
+             read as `unit` (see [default_free_type_vars]). If that doesn't
+             type-check either, the original error is the one reported. *)
+          default_free_type_vars := true;
+          let defaulted =
+            try Some (rounds 32 (Hashtbl.copy !last_dict_requirements) resolved |> drop_unused_generics env trait_methods method_names)
+            with _ -> None
+          in
+          default_free_type_vars := false;
+          (* Even when it fails, the retry got further (e.g. `last []` is
+             resolved), so its error is the one that points at what's really
+             left: report that one, from the final typecheck below. *)
+          match defaulted with Some d -> d | None -> resolved
+        end
       end
     in
     let full_structure = (* prelude @ *) user_structure @ [ entry_point ] in

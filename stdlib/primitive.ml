@@ -1,5 +1,6 @@
 (* List *)
 let scaml_list_cons x xs = x :: xs
+let scaml_list_concat = (@)
 (* CONVERSION *)
 let scaml_int_of_float = int_of_float
 let scaml_float_of_int = float_of_int

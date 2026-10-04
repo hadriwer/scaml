@@ -1,0 +1,30 @@
+
+type test_struct {
+    name of string ;
+    age of int ;
+    height of float ;
+    weight of float
+}
+
+impl showable of test_struct {
+    fn print p {
+        print (p.name);
+    }
+    fn println p { print p; println () }
+}
+
+fn my {
+    { name = "james" ; age = 41 ; height = 200. ; weight = 100. }
+}
+
+fn get_name l { l.name }
+
+fn main {
+    let p' = my ();
+    let p = { name = "hadrien"; age = 22; height = 177.2; weight=190.2 };
+    let t = Node (Leaf, 1., Node (Leaf, 2., Leaf));
+    println (get_name p);
+    println (sum 0. t);
+    println ("ah" * 3);
+    println (3 * "ah");
+}

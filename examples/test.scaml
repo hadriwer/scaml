@@ -1,18 +1,40 @@
-fn fact_opt n {
-    fn aux acc n {
-        if n <= 0 then acc 
-        else { aux (n*acc) (n-1) }
-    }
-    aux 1 n
+
+fn isqrt e { e |> to_float |> sqrt |> to_int }
+
+fn prime n {
+    fold_left (^acc e -> {
+        if forall (^i -> e % i != 0) (2..=isqrt e + 1)
+        then
+            e :: acc
+        else
+            acc
+    }) [] (n..0)
+}
+
+fn crible n {
+    let tab = Array.make (n+1) true;
+    tab[0] = false;
+
+    iter (^i -> {
+        if tab[i]
+        then
+            iter (^j -> tab[j] = false) ((i*i)..=n + i)
+        else ()
+    }) (2..=n);
+
+    fold_left (^acc i -> if tab[i] then i :: acc else acc) [] (n..=0)
 }
 
 fn main {
-    let t = 1, 2;
-    let a = Array.init 10 fact_opt;
-    let a' = Array.init 10 fact_opt;
-    println (sum 0 a);
-    println (fst t);
-    println (a[0]);
-    println (fact_opt 24);
-    println (a == a')
+    println (0..=1 + 2);
+
+    println ((1..=10) * (1..=10));
+
+    println (fold_left (*) 1 (1..10));
+
+    println (fold_left (^acc e -> e :: acc) [] (100..0));
+
+    println (prime 20);
+
+    println (crible 20);
 }

@@ -1,0 +1,188 @@
+
+fn last l {
+    match l {
+        | [] -> None
+        | [hd] -> Some hd
+        | x::xs -> last xs
+    }
+}
+
+fn last_two l {
+    match l {
+        | [] -> None
+        | [hd] -> None
+        | [a; b] -> Some (a, b)
+        | a::b::xs -> last_two xs
+    }
+}
+
+fn at i l {
+    fn aux i l {
+        match l {
+            | [] -> None
+            | x::xs -> if i == 0 then Some x else aux (i-1) xs
+        }
+    }
+    aux i l
+}
+
+fn length l {
+    fold_left (^acc e -> 1 + acc) 0 l
+}
+
+fn rev l {
+    fn aux acc l' {
+        match l' {
+            | [] -> acc
+            | x::xs -> aux (x::acc) xs
+        }
+    }
+    aux [] l
+}
+
+fn is_palindrome l {
+    l == (rev l)
+}
+
+type a node {
+    One of a | Many of a node list
+}
+
+fn flatten l {
+    match l {
+        | [] -> []
+        | (One x) :: xs -> x :: (flatten xs)
+        | (Many r) :: xs -> (flatten r) @ (flatten xs)
+    }
+}
+
+fn compress l {
+    fn aux prec l {
+        match l {
+            | [] -> []
+            | x::xs -> {
+                if x == prec 
+                then 
+                    aux x xs 
+                else 
+                    x :: (aux x xs)
+            }
+        }
+    }
+    aux "" l
+}
+
+fn pack l {
+    fn aux cur prec l {
+        match l {
+            | [] -> [cur]
+            | x::xs -> {
+                match prec {
+                    | None -> aux [x] (Some x) xs
+                    | Some p -> {
+                        if p == x
+                        then aux (x::cur) prec xs
+                        else cur :: aux [x] (Some x) xs
+                    }
+                }
+            }
+        }
+    }
+    match l {
+        | [] -> []
+        | _ -> aux [] None l
+    }
+}
+
+fn encode l {
+    fn aux prec cnt l {
+        match l {
+            | [] -> [(Option.get prec, cnt)]
+            | x::xs -> {
+                let opt_x = Some x;
+                match prec {
+                    | None -> aux opt_x (cnt+1) xs
+                    | Some x' -> {
+                        if x == x'
+                        then
+                            aux opt_x (cnt+1) xs
+                        else
+                            (x', cnt) :: (aux opt_x 1 xs)
+                    }
+                }
+            }
+        }
+    }
+    match l {
+        | [] -> []
+        | _ -> aux None 0 l
+    }
+}
+
+type a rle {
+    One of a | Many of int, a
+}
+
+impl showable of rle {
+    fn print r { 
+        match r { 
+            | One x -> { print "One "; print x }
+            | Many (i, a) -> { print "Many "; print (i,a) }
+        }
+    }
+
+    fn println r { print r; println () }
+}
+
+fn encode_rle l {
+    fn aux l {
+        match l {
+            | [] -> []
+            | (w, cnt)::xs -> (if cnt == 1 then One w else Many (cnt, w)) :: aux xs
+        }
+    }
+    aux (encode l)
+}
+
+fn decode l {
+    match l {
+        | [] -> []
+        | x::xs -> {
+            match x {
+                | One x -> x :: decode xs
+                | Many (cnt, w) -> (repeat cnt (^x -> w :: x) []) @ decode xs
+            }
+        }
+    }
+}
+
+fn main {
+    println (last ["a" ; "b" ; "c" ; "d"]);
+    println (last []);
+
+    println (last_two ["a"; "b"; "c"; "d"]);
+    println (last_two ["a"]);
+
+    println (at 2 ["a"; "b"; "c"; "d"; "e"]);
+    println (at 2 ["a"]);
+
+    println (length ["a"; "b"; "c"]);
+    println (length []);
+
+    println (rev ["a"; "b"; "c"]);
+
+    println (is_palindrome ["x"; "a"; "m"; "a"; "x"]);
+    println (not (is_palindrome ["a"; "b"]));
+
+    println (flatten [One "a"; Many [One "b"; Many [One "c" ;One "d"]; One "e"]]);
+
+    println (compress ["a"; "a"; "a"; "a"; "b"; "c"; "c"; "a"; "a"; "d"; "e"; "e"; "e"; "e"]);
+
+    println (pack ["a"; "a"; "a"; "a"; "b"; "c"; "c"; "a"; "a"; "d"; "d"; "e"; "e"; "e"; "e"]);
+
+    println (encode ["a"; "a"; "a"; "a"; "b"; "c"; "c"; "a"; "a"; "d"; "e"; "e"; "e"; "e"]);
+
+    println (encode_rle ["a"; "a"; "a"; "a"; "b"; "c"; "c"; "a"; "a"; "d"; "e"; "e"; "e"; "e"]);
+
+    println (decode [Many (4, "a"); One "b"; Many (2, "c"); Many (2, "a"); One "d"; Many (4, "e")]);
+}   

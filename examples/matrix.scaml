@@ -1,0 +1,29 @@
+
+fn cmp_mat {
+    let m = Array.make 10 0;
+    let m' = Array.make 10 0;
+    println (m == m');
+    let m = Array.make_matrix 10 10 0;
+    let m' = Array.make_matrix 10 10 0;
+    println (m == m');
+}
+
+fn col {
+    let n = 10;
+    let m = Array.init n Fun.id;
+
+    println (m[0] * 2);
+    m |> map (^x -> 1 - x) |> println;
+}
+
+fn main {
+    let m = Array.init_matrix 10 10 (^x y -> x + y);
+    let a = Array.init 10 Fun.id;
+    println m;
+    println m[0][0];
+    println m[2*0+1,0];
+    cmp_mat ();
+    col ();
+    println (map (^x -> x * 2) m);
+    println (map (^x -> x * 2) a);
+}
