@@ -74,17 +74,40 @@ let is_capitalized s = s <> "" && s.[0] >= 'A' && s.[0] <= 'Z'
 let mkbool_pat loc b =
   Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident (if b then "true" else "false")) loc) None
 
-(* `t[i] = v` -> `Array.set t i v`; with several indices, like reading
-   (`m[i, j]` is `m[i][j]`), all but the last one select the inner array:
-   `m[i, j] = v` -> `Array.set (Array.get m i) j v`. *)
-let mkassign loc arr (index : expression) v =
-  let indices = match index.pexp_desc with Pexp_tuple l -> List.map snd l | _ -> [ index ] in
+(* `a[i]` calls the `[]` operator and `a[i] = v` the `[]=` one, once a trait
+   declares them (`op [] of a -> b -> c`), so indexing works on any type
+   with an impl (overloaded by container and index type, like `arithm`).
+   Before that -- or without the stdlib -- it falls back to arrays. *)
+let index_fn loc op fallback =
+  match Hashtbl.find_opt operator_tbl op with
+  | Some f -> mkident loc f
+  | None -> mkqident loc fallback
+
+(* Each call gets its own location (up to the end of its index): the
+   overload picked for a call is recorded by location in bin/main.ml, so
+   `m[i, j] = v`'s inner `[]` and outer `[]=` must not share one. *)
+let mkget (loc : Location.t) arr (i : expression) =
+  let loc = { loc with loc_end = i.pexp_loc.loc_end } in
+  Ast_helper.Exp.apply ~loc (index_fn loc "[]" "Array.get") [ (Nolabel, arr); (Nolabel, i) ]
+
+(* `m[i, j]` is `m[i][j]`, but `h[(i, j)]` is one tuple index (e.g. a
+   key): told apart by whether the tuple starts right at the `[`'s
+   content ([index_start]) or inside parentheses. *)
+let split_indices (index : expression) index_start =
+  match index.pexp_desc with
+  | Pexp_tuple l when index.pexp_loc.loc_start.pos_cnum = index_start.Lexing.pos_cnum -> List.map snd l
+  | _ -> [ index ]
+
+(* `t[i] = v` -> `[]=` t i v; with several indices, like reading
+   (`m[i, j]` is `m[i][j]`), all but the last one select the inner value:
+   `m[i, j] = v` -> `[]=` (m[i]) j v. *)
+let mkassign loc arr (index : expression) index_start v =
   let rec go arr = function
-    | [ last ] -> Ast_helper.Exp.apply ~loc (mkqident loc "Array.set") [ (Nolabel, arr); (Nolabel, last); (Nolabel, v) ]
-    | i :: rest -> go (Ast_helper.Exp.apply ~loc (mkqident loc "Array.get") [ (Nolabel, arr); (Nolabel, i) ]) rest
+    | [ last ] -> Ast_helper.Exp.apply ~loc (index_fn loc "[]=" "Array.set") [ (Nolabel, arr); (Nolabel, last); (Nolabel, v) ]
+    | i :: rest -> go (mkget loc arr i) rest
     | [] -> assert false
   in
-  go arr indices
+  go arr (split_indices index index_start)
 
 let mkbool loc b =
   Ast_helper.Exp.construct ~loc
@@ -94,7 +117,7 @@ let mkbool loc b =
 let mkunit loc =
   Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None
 
-let known_types = [ "unit"; "int"; "float"; "string"; "bool"; "char" ]
+let known_types = [ "unit"; "int"; "float"; "string"; "bytes"; "bool"; "char" ]
 
 (* How many type parameters a concrete (non-abstract) type needs, e.g.
    `array` needs exactly one (its element type). Everything else here is a
@@ -365,6 +388,13 @@ let load_used_file loc path : Parsetree.structure =
 program:
   | items = list(item); EOF { List.concat items }
 
+(* An operator's name: a symbol (`+`, `|>`), or `[]` / `[]=` for what
+   `a[i]` / `a[i] = v` call. *)
+op_name:
+  | c = CUSTOM { c }
+  | LBRACK; RBRACK { "[]" }
+  | LBRACK; RBRACK; EQ { "[]=" }
+
 fn_params:
   | LPAREN; params = separated_list(COMMA, IDENT); RPAREN { params }
   | params = list(IDENT) { params }
@@ -395,7 +425,7 @@ type_declaration_trait_def:
 impl_item:
   | FN; name = IDENT; params = fn_params; LBRACE; body = block; RBRACE
       { mkimplmethod (mkloc $startpos $endpos) name params body }
-  | OP; name = CUSTOM; params = fn_params; LBRACE; body = block; RBRACE
+  | OP; name = op_name; params = fn_params; LBRACE; body = block; RBRACE
       { let loc = mkloc $startpos $endpos in
         let f_name =
           match Hashtbl.find_opt operator_tbl name with
@@ -416,7 +446,7 @@ impl_entry:
       { `Assoc (Location.mkloc n (mkloc $startpos(n) $endpos(n)), t) }
 
 atom_body_trait_def:
-  | OP; n = CUSTOM; OF; t = type_declaration
+  | OP; n = op_name; OF; t = type_declaration
       {
         let loc = mkloc $startpos $endpos in
         let f_name = "op___" ^ (string_of_int !operator_cnt) ^ "___" in
@@ -513,11 +543,12 @@ item:
   | FN; name = IDENT; params = fn_params;
     LBRACE; body = block; RBRACE
     { [ mkfn (mkloc $startpos $endpos) name params body ] }
-  | OP; name = CUSTOM; params = fn_params;
+  | OP; name = op_name; params = fn_params;
     LBRACE; body = block; RBRACE
     {
       let l = List.length params in
-      if l <> 2 then raise (MyError ("Operator has exactly to argument. But " ^ (string_of_int l) ^ " were given."));
+      let expected = if name = "[]=" then 3 else 2 in
+      if l <> expected then raise (MyError (Printf.sprintf "Operator `%s` takes exactly %d arguments, but %d were given." name expected l));
       let f_name = "op___" ^ (string_of_int !operator_cnt) ^ "___" in
       incr operator_cnt;
       Hashtbl.add operator_tbl name f_name;
@@ -707,11 +738,12 @@ block:
     { 
       mklocalfn (mkloc $startpos $endpos) name params fbody rest 
     }
-  | OP; name = CUSTOM; params = fn_params;
+  | OP; name = op_name; params = fn_params;
     LBRACE; fbody = block; RBRACE; rest = block
     {
       let l = List.length params in
-      if l <> 2 then raise (MyError ("Operator has exactly to argument. But " ^ (string_of_int l) ^ " were given."));
+      let expected = if name = "[]=" then 3 else 2 in
+      if l <> expected then raise (MyError (Printf.sprintf "Operator `%s` takes exactly %d arguments, but %d were given." name expected l));
       let f_name = "op___" ^ (string_of_int !operator_cnt) ^ "___" in
       incr operator_cnt;
       Hashtbl.add operator_tbl name f_name;
@@ -740,7 +772,7 @@ block:
 
 assignment:
   | a = indexable; INDEX_LBRACK; index = expr; RBRACK; EQ; v = expr
-    { mkassign (mkloc $startpos $endpos) a index v }
+    { mkassign (mkloc $startpos $endpos) a index $startpos(index) v }
 
 body:
   | LBRACE; b = block; RBRACE
@@ -852,18 +884,8 @@ tuple:
   
 indexable:
   | a = indexable; INDEX_LBRACK; index = expr; RBRACK
-      { 
-        let indices =
-          match index.pexp_desc with
-            | Pexp_tuple l -> List.map snd l
-            | _ -> [ index ]
-        in
-        let loc = mkloc $startpos $endpos in
-        let f_get_array = mkqident loc "Array.get" in
-        List.fold_left (fun acc i ->
-          Ast_helper.Exp.apply ~loc f_get_array [ (Nolabel, acc); (Nolabel, i) ]
-        ) a indices
-      }
+      { let loc = mkloc $startpos $endpos in
+        List.fold_left (mkget loc) a (split_indices index $startpos(index)) }
   | e = indexable; DOT; f = IDENT
     {
       Ast_helper.Exp.field ~loc:(mkloc $startpos $endpos) e

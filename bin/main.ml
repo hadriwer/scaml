@@ -210,7 +210,7 @@ let eliminate_dead_code (structure : Parsetree.structure) : Parsetree.structure 
 (* The types known/concrete enough that a trait signature can name them
    directly (mirrors lib/parser.mly's [known_types]). Any other name in a
    signature is one of the trait's own abstract placeholders. *)
-let known_type_names = [ "unit"; "int"; "float"; "string"; "bool"; "char" ]
+let known_type_names = [ "unit"; "int"; "float"; "string"; "bytes"; "bool"; "char" ]
 
 (* When a trait method parameter is itself a function type with one of the
    trait's abstract placeholders somewhere in its own domain chain (e.g.
@@ -321,6 +321,7 @@ let known_type_name (path : Path.t) =
   | _ ->
   if Path.same path Predef.path_int then Some "int"
   else if Path.same path Predef.path_string then Some "string"
+  else if Path.same path Predef.path_bytes then Some "bytes"
   else if Path.same path Predef.path_float then Some "float"
   else if Path.same path Predef.path_bool then Some "bool"
   else if Path.same path Predef.path_char then Some "char"
@@ -636,7 +637,7 @@ let harvest_dispatch
   let dict_requirements : (string, string * string) Hashtbl.t = Hashtbl.copy prior_dict_requirements in
   (* Overloaded calls whose argument types are all known but match no impl:
      location, trait, those types. *)
-  let overload_misses : (Location.t * string * string list) list ref = ref [] in
+  let overload_misses : (Location.t * string * string * string list) list ref = ref [] in
   (* First one wins: on a later probe round, an impl's body was already
      rewritten and upgraded (its `X.__elem0__` renamed to `X.a`), and must
      not re-record its requirement under that new name. *)
@@ -893,7 +894,7 @@ let harvest_dispatch
           | None ->
             (* Every type is known and still nothing matches: that's final. *)
             let trait_name = Option.value ~default:"?" (Hashtbl.find_opt trait_of_name name) in
-            overload_misses := (loc, trait_name, heads) :: !overload_misses;
+            overload_misses := (loc, trait_name, name, heads) :: !overload_misses;
             None
   in
   let expr (iter : Tast_iterator.iterator) (e : Typedtree.expression) =
@@ -1178,10 +1179,14 @@ let harvest_dispatch
   let iterator = { Tast_iterator.default_iterator with expr; module_binding } in
   iterator.structure iterator typed;
   (match List.rev !overload_misses with
-   | (loc, trait_name, tys) :: _ ->
+   | (loc, trait_name, name, tys) :: _ ->
+     (* Names the missing method too: a trait may be implemented only in
+        part for some types (e.g. `indexable`'s `[]` but not `[]=` for a
+        read-only `string`). *)
+     let shown = match SCaml.Op_names.prettify name with p when p = name -> "`" ^ name ^ "`" | p -> p in
      Location.print_report Format.err_formatter
        (Location.error ~loc
-          (Printf.sprintf "No impl of trait `%s` for %s" trait_name (String.concat ", " tys)));
+          (Printf.sprintf "No impl of %s (trait `%s`) for %s" shown trait_name (String.concat ", " tys)));
      exit 1
    | [] -> ());
   (table, dict_requirements)
@@ -1341,6 +1346,7 @@ let literal_of_known_type loc name : Parsetree.expression option =
   | "bool" -> Some (Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "false") loc) None)
   | "string" -> Some (Ast_helper.Exp.constant ~loc (Ast_helper.Const.string ""))
   | "char" -> Some (Ast_helper.Exp.constant ~loc (Ast_helper.Const.char ' '))
+  | "bytes" -> Some (Ast_helper.Exp.ident ~loc (Location.mkloc (Longident.Ldot (Location.mknoloc (Longident.Lident "Bytes"), Location.mknoloc "empty")) loc))
   | _ -> None
 
 let mkbool_lit loc b =

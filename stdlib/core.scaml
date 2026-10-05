@@ -1,5 +1,25 @@
 #use "stdlib/primitive.ml"
 
+
+trait indexable {
+    op [] of a -> b -> c
+    op []= of a -> b -> c -> unit
+}
+
+impl indexable of array, int {
+    op [] { Array.get }
+    op []= { Array.set }
+}
+
+impl indexable of bytes, int {
+    op [] { Bytes.get }
+    op []= { Bytes.set }
+}
+
+impl indexable of string, int {
+    op [] { String.get }
+}
+
 trait showable {
     type a
     fn print of a -> unit
@@ -9,6 +29,11 @@ trait showable {
 impl showable of string {
     fn print s { scaml_print_string s }
     fn println s { print s; scaml_print_newline () }
+}
+
+impl showable of bytes {
+    fn print b { scaml_print_string (Bytes.to_string b) }
+    fn println b { print b; scaml_print_newline () }
 }
 
 impl showable of int {
