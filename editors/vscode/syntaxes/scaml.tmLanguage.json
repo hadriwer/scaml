@@ -1,0 +1,422 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "SCaml",
+  "scopeName": "source.scaml",
+  "fileTypes": [
+    "scaml"
+  ],
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#directive"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "include": "#char"
+    },
+    {
+      "include": "#number"
+    },
+    {
+      "include": "#fn-declaration"
+    },
+    {
+      "include": "#op-declaration"
+    },
+    {
+      "include": "#type-declaration"
+    },
+    {
+      "include": "#trait-declaration"
+    },
+    {
+      "include": "#impl-declaration"
+    },
+    {
+      "include": "#let-binding"
+    },
+    {
+      "include": "#lambda"
+    },
+    {
+      "include": "#keyword"
+    },
+    {
+      "include": "#constant"
+    },
+    {
+      "include": "#builtin-type"
+    },
+    {
+      "include": "#module"
+    },
+    {
+      "include": "#constructor"
+    },
+    {
+      "include": "#field-access"
+    },
+    {
+      "include": "#operator-section"
+    },
+    {
+      "include": "#operator"
+    },
+    {
+      "include": "#punctuation"
+    },
+    {
+      "include": "#identifier"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.scaml",
+      "match": "(//).*$",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.comment.scaml"
+        }
+      }
+    },
+    "directive": {
+      "match": "(#use)\\b",
+      "captures": {
+        "1": {
+          "name": "keyword.control.import.scaml"
+        }
+      }
+    },
+    "string": {
+      "name": "string.quoted.double.scaml",
+      "begin": "\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.scaml"
+        }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.scaml"
+        }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.scaml",
+          "match": "\\\\[nt\"\\\\]"
+        },
+        {
+          "name": "invalid.illegal.escape.scaml",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "char": {
+      "name": "string.quoted.single.scaml",
+      "match": "(?<![A-Za-z0-9_'])'[A-Za-z]'"
+    },
+    "number": {
+      "patterns": [
+        {
+          "comment": "`1.` and `1.5` are floats, but `0..2` is the int 0 followed by `..`",
+          "name": "constant.numeric.float.scaml",
+          "match": "(?<![A-Za-z0-9_'])\\d+\\.(?!\\.)\\d*"
+        },
+        {
+          "name": "constant.numeric.integer.scaml",
+          "match": "(?<![A-Za-z0-9_'])\\d+"
+        }
+      ]
+    },
+    "fn-declaration": {
+      "comment": "fn name params {  /  fn name of type  (in traits)",
+      "begin": "\\b(fn)\\s+([a-z_][A-Za-z0-9_']*)",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.function.scaml"
+        },
+        "2": {
+          "name": "entity.name.function.scaml"
+        }
+      },
+      "end": "(?=\\{)|(?=\\bof\\b)|$",
+      "patterns": [
+        {
+          "include": "#parameters"
+        }
+      ]
+    },
+    "op-declaration": {
+      "comment": "op <symbols> params {  /  op <symbols> of type  (in traits)",
+      "begin": "\\b(op)\\s+([+\\-*/<>:%.|=&!@^]+)",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.function.operator.scaml"
+        },
+        "2": {
+          "name": "entity.name.function.operator.scaml"
+        }
+      },
+      "end": "(?=\\{)|(?=\\bof\\b)|$",
+      "patterns": [
+        {
+          "include": "#parameters"
+        }
+      ]
+    },
+    "parameters": {
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "name": "variable.language.wildcard.scaml",
+          "match": "\\b_\\b"
+        },
+        {
+          "name": "variable.parameter.scaml",
+          "match": "\\b[a-z_][A-Za-z0-9_']*"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "type-declaration": {
+      "patterns": [
+        {
+          "comment": "type a b name {  -- the name is the last identifier before `{`",
+          "match": "\\b(type)\\s+((?:[a-z_][A-Za-z0-9_']*\\s+)*)([a-z_][A-Za-z0-9_']*)\\s*(?=\\{)",
+          "captures": {
+            "1": {
+              "name": "storage.type.scaml"
+            },
+            "2": {
+              "name": "variable.other.type-parameter.scaml"
+            },
+            "3": {
+              "name": "entity.name.type.scaml"
+            }
+          }
+        },
+        {
+          "comment": "type a b  -- abstract type variables declared inside a trait",
+          "match": "\\b(type)((?:\\s+(?!of\\b)[a-z_][A-Za-z0-9_']*)+)",
+          "captures": {
+            "1": {
+              "name": "storage.type.scaml"
+            },
+            "2": {
+              "name": "entity.name.type.scaml"
+            }
+          }
+        }
+      ]
+    },
+    "trait-declaration": {
+      "match": "\\b(trait)\\s+([a-z_][A-Za-z0-9_']*)",
+      "captures": {
+        "1": {
+          "name": "storage.type.trait.scaml"
+        },
+        "2": {
+          "name": "entity.name.type.trait.scaml"
+        }
+      }
+    },
+    "impl-declaration": {
+      "match": "\\b(impl)\\s+([a-z_][A-Za-z0-9_']*)",
+      "captures": {
+        "1": {
+          "name": "storage.type.impl.scaml"
+        },
+        "2": {
+          "name": "entity.name.type.trait.scaml"
+        }
+      }
+    },
+    "let-binding": {
+      "match": "\\b(let)\\s+([a-z_][A-Za-z0-9_']*)",
+      "captures": {
+        "1": {
+          "name": "storage.type.let.scaml"
+        },
+        "2": {
+          "name": "variable.other.declaration.scaml"
+        }
+      }
+    },
+    "lambda": {
+      "comment": "^x y -> body",
+      "begin": "\\^",
+      "beginCaptures": {
+        "0": {
+          "name": "storage.type.function.lambda.scaml"
+        }
+      },
+      "end": "->",
+      "endCaptures": {
+        "0": {
+          "name": "keyword.operator.arrow.scaml"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#parameters"
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "keyword.control.conditional.scaml",
+          "match": "\\b(if|then|else|match)\\b"
+        },
+        {
+          "name": "storage.type.scaml",
+          "match": "\\b(fn|op|let|type|trait|impl)\\b"
+        },
+        {
+          "name": "keyword.other.of.scaml",
+          "match": "\\bof\\b"
+        }
+      ]
+    },
+    "constant": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.scaml",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.unit.scaml",
+          "match": "\\(\\s*\\)"
+        },
+        {
+          "name": "constant.language.empty-array.scaml",
+          "match": "\\[\\|\\s*\\|\\]"
+        },
+        {
+          "name": "constant.language.empty-list.scaml",
+          "match": "\\[\\s*\\]"
+        }
+      ]
+    },
+    "builtin-type": {
+      "name": "support.type.primitive.scaml",
+      "match": "\\b(int|float|string|char|bool|unit|list|array|option|range)\\b(?!')"
+    },
+    "module": {
+      "comment": "Array.make, Fun.id, ...",
+      "match": "\\b([A-Z][A-Za-z0-9_']*)(\\.)(?=[A-Za-z_])",
+      "captures": {
+        "1": {
+          "name": "entity.name.namespace.scaml"
+        },
+        "2": {
+          "name": "punctuation.accessor.scaml"
+        }
+      }
+    },
+    "constructor": {
+      "name": "variable.other.enummember.scaml",
+      "match": "\\b[A-Z][A-Za-z0-9_']*"
+    },
+    "field-access": {
+      "comment": "p.name",
+      "match": "(?<=[A-Za-z0-9_')\\]])(\\.)([a-z_][A-Za-z0-9_']*)",
+      "captures": {
+        "1": {
+          "name": "punctuation.accessor.scaml"
+        },
+        "2": {
+          "name": "variable.other.property.scaml"
+        }
+      }
+    },
+    "operator-section": {
+      "comment": "(+), (*), (<=) ... used as functions",
+      "match": "(\\()\\s*([+\\-*/<>:%.|=&!@]+)\\s*(\\))",
+      "captures": {
+        "1": {
+          "name": "punctuation.section.parens.begin.scaml"
+        },
+        "2": {
+          "name": "keyword.operator.scaml"
+        },
+        "3": {
+          "name": "punctuation.section.parens.end.scaml"
+        }
+      }
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.scaml",
+          "match": "->(?![+\\-*/<>:%.|=&!@])"
+        },
+        {
+          "name": "punctuation.separator.array.scaml",
+          "match": "\\[\\||\\|\\]"
+        },
+        {
+          "name": "keyword.operator.pipe.scaml",
+          "match": "\\|>(?![+\\-*/<>:%.|=&!@])"
+        },
+        {
+          "name": "keyword.operator.range.scaml",
+          "match": "\\.\\.=?(?![+\\-*/<>:%.|=&!@])"
+        },
+        {
+          "name": "keyword.operator.cons.scaml",
+          "match": "::(?![+\\-*/<>:%.|=&!@])"
+        },
+        {
+          "name": "keyword.operator.match-case.scaml",
+          "match": "\\|(?![+\\-*/<>:%.|=&!@\\]])"
+        },
+        {
+          "name": "keyword.operator.assignment.scaml",
+          "match": "=(?![+\\-*/<>:%.|=&!@])"
+        },
+        {
+          "name": "keyword.operator.scaml",
+          "match": "[+\\-*/<>:%.|=&!@]+"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.comma.scaml",
+          "match": ","
+        },
+        {
+          "name": "punctuation.terminator.statement.scaml",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.section.braces.scaml",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.brackets.scaml",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.section.parens.scaml",
+          "match": "[()]"
+        }
+      ]
+    },
+    "identifier": {
+      "name": "variable.other.scaml",
+      "match": "\\b[a-z_][A-Za-z0-9_']*"
+    }
+  }
+}
