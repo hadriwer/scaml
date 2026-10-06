@@ -57,9 +57,7 @@ let print_tokens (lexbuf : Lexing.lexbuf) =
 (* Re-lexes [filename] from scratch and prints every token successfully
    produced, stopping silently if the lexer crashes (Lex_error). Used to
    show the tokens seen right before a lexing failure. *)
-let dump_until_crash filename =
-  let ic = open_in filename in
-  let lexbuf = Lexing.from_channel ic in
+let dump_until_crash filename contents =
+  let lexbuf = Lexing.from_string contents in
   Lexing.set_filename lexbuf filename;
-  (try print_tokens lexbuf with Lexer.Lex_error _ -> ());
-  close_in ic
+  (try print_tokens lexbuf with Lexer.Lex_error _ -> ())

@@ -352,17 +352,19 @@ let mkoverloadimpl loc trait_name (tys : string list) (methods : structure_item 
    OCaml's own parser (Parse.implementation, the same entry point ocamlopt
    itself uses for a .ml file) rather than our lexer/parser, and its
    top-level bindings are spliced in directly -- no separate compilation
-   unit, no .cmi. *)
+   unit, no .cmi. [Embedded.file] is checked first, so the stdlib's own
+   `#use "stdlib/..."` resolves to the copy built into the compiler. *)
 let load_used_file loc path : Parsetree.structure =
-  let ic =
-    try open_in path
-    with Sys_error msg -> raise (Location.Error (Location.error ~loc msg))
+  let contents =
+    match !Embedded.file path with
+    | Some contents -> contents
+    | None ->
+      try In_channel.with_open_bin path In_channel.input_all
+      with Sys_error msg -> raise (Location.Error (Location.error ~loc msg))
   in
-  let lexbuf = Lexing.from_channel ic in
+  let lexbuf = Lexing.from_string contents in
   Lexing.set_filename lexbuf path;
-  match Parse.implementation lexbuf with
-  | structure -> close_in ic; structure
-  | exception exn -> close_in ic; raise exn
+  Parse.implementation lexbuf
 %}
 
 %token <int> INT

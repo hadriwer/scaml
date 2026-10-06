@@ -1,4 +1,15 @@
 (executable
  (public_name SCaml)
  (name main)
+ (modules main stdlib_files)
  (libraries SCaml compiler-libs.common))
+
+(rule
+ (target stdlib_files.ml)
+ (deps
+  (glob_files %{project_root}/stdlib/*.scaml)
+  (glob_files %{project_root}/stdlib/*.ml))
+ (action
+  (with-stdout-to
+   %{target}
+   (run embed/embed.exe %{deps}))))
