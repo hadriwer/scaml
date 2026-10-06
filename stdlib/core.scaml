@@ -501,3 +501,15 @@ impl quantifiable of range {
 
     fn exists p r { not (forall (^i -> not (p i)) r) }
 }
+
+trait sizable {
+    fn len of 'a -> int
+}
+
+impl sizable of array {
+    fn len { Array.length }
+}
+
+impl sizable of list {
+    fn len { List.length }
+}
