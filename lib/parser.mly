@@ -142,6 +142,12 @@ let type_arity name =
    auto-declaring the ones that aren't already known/concrete as abstract
    types on the trait itself, is what makes that ascription actually work. *)
 let mk_type_component loc name =
+  (* The lexer accepts `'` inside identifiers (for `x'`), so OCaml's own
+     `'a` would otherwise reach the generated code as an invalid type name. *)
+  if String.length name > 0 && name.[0] = '\'' then
+    raise (Location.Error (Location.error ~loc
+      (Printf.sprintf "Invalid type name `%s`: write type parameters without a quote, e.g. `%s`"
+         name (String.sub name 1 (String.length name - 1)))));
   Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident name) loc) []
 
 (* Every non-concrete name used across a trait's method signatures (e.g. `a`
@@ -369,13 +375,24 @@ let load_used_file loc path : Parsetree.structure =
 
 %token <int> INT
 %token <char> CHAR
-%token <string> IDENT CUSTOM FLOAT QIDENT
+%token <string> IDENT FLOAT QIDENT
+%token <string> OP_OR OP_AND OP_CMP OP_AT OP_CONS OP_ADD OP_MUL OP_POW
 %token <string> STRING
 %token LPAREN RPAREN LBRACE RBRACE COMMA SEMICOLON EQ LBRACK RBRACK
 %token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TRAIT IMPL TYPE OF
 %token EOF DOT BAR MATCH INDEX_LBRACK LBRACKBAR BARRBRACK
 
-%left CUSTOM
+(* Binary operators, lowest priority first, as in OCaml (see
+   [Lexer.operator]): `1 + 2 * 3` is `1 + (2 * 3)`, `x :: l @ m` is
+   `x :: (l @ m)`, `a + b |> f` is `(a + b) |> f`. *)
+%right OP_OR
+%right OP_AND
+%left OP_CMP
+%right OP_AT
+%right OP_CONS
+%left OP_ADD
+%left OP_MUL
+%right OP_POW
 (* `match f x { ... }`: after the scrutinee, a `{` opens the arms rather than
    a record literal passed as one more argument (as in Rust; write
    `match f ({ x = 1 }) { ... }` for that). Only the scrutinee position is
@@ -392,8 +409,20 @@ program:
 
 (* An operator's name: a symbol (`+`, `|>`), or `[]` / `[]=` for what
    `a[i]` / `a[i] = v` call. *)
+(* Inlined, so each use expands to one production per token and keeps that
+   token's precedence (see the declarations above). *)
+%inline binop:
+  | c = OP_OR { c }
+  | c = OP_AND { c }
+  | c = OP_CMP { c }
+  | c = OP_AT { c }
+  | c = OP_CONS { c }
+  | c = OP_ADD { c }
+  | c = OP_MUL { c }
+  | c = OP_POW { c }
+
 op_name:
-  | c = CUSTOM { c }
+  | c = binop { c }
   | LBRACK; RBRACK { "[]" }
   | LBRACK; RBRACK; EQ { "[]=" }
 
@@ -812,7 +841,7 @@ match_case:
 (* `x :: rest`, right-associative (`a :: b :: rest`). `::` comes from the
    lexer as an operator like any other, so only that one is accepted here. *)
 pattern:
-  | hd = app_pattern; c = CUSTOM; tl = pattern
+  | hd = app_pattern; c = binop; tl = pattern
     { let loc = mkloc $startpos $endpos in
       if c <> "::" then
         raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
@@ -868,7 +897,7 @@ field_pattern:
       (Location.mkloc (Longident.Lident f) floc, p) }
 
 expr_bin:
-  | e1 = expr_bin; c = CUSTOM; e2 = expr_bin
+  | e1 = expr_bin; c = binop; e2 = expr_bin
       {
         let f_name = match Hashtbl.find_opt operator_tbl c with Some f -> f | None -> c in
         let f_ident = mkident (mkloc $startpos(c) $endpos(c)) f_name in
@@ -919,7 +948,7 @@ atom:
         else mkident loc x }
   | q = QIDENT { mkqident (mkloc $startpos $endpos) q }
   | LPAREN; RPAREN { mkunit (mkloc $startpos $endpos) }
-  | LPAREN; c = CUSTOM; RPAREN
+  | LPAREN; c = binop; RPAREN
       { 
         let loc = mkloc $startpos $endpos in
         let f_name = match Hashtbl.find_opt operator_tbl c with Some f -> f | None -> c in

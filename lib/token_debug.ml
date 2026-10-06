@@ -1,5 +1,6 @@
 let string_of_token : Parser.token -> string = function
-  | Parser.CUSTOM s -> Printf.sprintf "CUSTOM %s" s
+  | Parser.OP_OR s | Parser.OP_AND s | Parser.OP_CMP s | Parser.OP_AT s
+  | Parser.OP_CONS s | Parser.OP_ADD s | Parser.OP_MUL s | Parser.OP_POW s -> Printf.sprintf "OP %s" s
   | Parser.INT n -> Printf.sprintf "INT %d" n
   | Parser.IDENT s -> Printf.sprintf "IDENT %S" s
   | Parser.STRING s -> Printf.sprintf "STRING %S" s

@@ -2,6 +2,21 @@
 open Parser
 
 exception Lex_error of string
+
+(* An operator's token carries its precedence, decided by its leading
+   characters as in OCaml (so a user-defined operator gets the same
+   priority as there, e.g. `*.` like `*`). *)
+let operator c =
+  if String.length c >= 2 && String.sub c 0 2 = "**" then OP_POW c
+  else
+    match c.[0] with
+    | '*' | '/' | '%' -> OP_MUL c
+    | '+' | '-' -> OP_ADD c
+    | ':' when c = "::" -> OP_CONS c
+    | '@' -> OP_AT c
+    | '&' when c = "&" || c = "&&" -> OP_AND c
+    | '|' when c = "||" -> OP_OR c
+    | _ -> OP_CMP c
 }
 
 let digit = ['0'-'9']
@@ -33,7 +48,7 @@ rule raw_token = parse
   | "->" { ARROW }
   | "." { DOT }
   | "=" { EQ }
-  | "|" { BAR } (* alone only: `||`, `|>` stay CUSTOM (longest match) *)
+  | "|" { BAR } (* alone only: `||`, `|>` stay operators (longest match) *)
   | "type" { TYPE }
   | "#use" { USE }
   | "fn"  { FN }
@@ -54,7 +69,7 @@ rule raw_token = parse
   | ")" { RPAREN }
   | "{" { LBRACE }
   | "}" { RBRACE }
-  | "[|" { LBRACKBAR } (* before `[` and custom `||`, so `[||]` is an empty array *)
+  | "[|" { LBRACKBAR } (* before `[` and the `||` operator, so `[||]` is an empty array *)
   | "|]" { BARRBRACK }
   | "[" { LBRACK } (* or INDEX_LBRACK: see [token] at the end *)
   | "]" { RBRACK }
@@ -63,7 +78,7 @@ rule raw_token = parse
   | '"' { read_string (Buffer.create 16) lexbuf }
   | qualified_ident as q { QIDENT q }
   | ident as id { IDENT id }
-  | custom_sym as c { CUSTOM c }
+  | custom_sym as c { operator c }
   | eof { EOF }
   | _ as c { raise (Lex_error (Printf.sprintf "Unexpected character: %c" c)) }
 
