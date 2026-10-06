@@ -600,6 +600,25 @@ type dispatch_target =
 let loc_key (loc : Location.t) =
   (loc.loc_start.pos_fname, loc.loc_start.pos_cnum, loc.loc_end.pos_cnum)
 
+(* What a trait method call's self argument turned out to be. *)
+type self_kind = Unknown | Function | Other
+
+(* Every trait method call [harvest_dispatch] has seen, keyed by the
+   method's own location: its name, trait, and its self argument's type
+   (printed) and kind. Left unresolved -- no impl for that type -- such a
+   call reaches OCaml's typechecker as a bare name and fails as "Unbound
+   value"; [report_type_error] reads this to say which impl is missing. *)
+let trait_calls : (string * int * int, string * string * string * self_kind) Hashtbl.t = Hashtbl.create 16
+
+let record_trait_call loc name trait_name env ty =
+  let kind =
+    match Types.get_desc (Ctype.expand_head env ty) with
+    | Tvar _ -> Unknown
+    | Tarrow _ -> Function
+    | _ -> Other
+  in
+  Hashtbl.replace trait_calls (loc_key loc) (name, trait_name, Format.asprintf "%a" Printtyp.type_expr ty, kind)
+
 (* Walks the probed Typedtree looking for `Texp_apply` whose function is
    directly a trait method name (e.g. `+ a b`, `print x`, or the innermost
    application in a curried multi-arg call). For each one found, reads the
@@ -687,6 +706,15 @@ let harvest_dispatch
      inside its own body. *)
   let current_impl_module = ref None in
   let target_is_self mod_name = !current_impl_module = Some mod_name in
+  (* A call on a type with no impl (e.g. `println p` for a user type
+     without `impl showable`) is left alone, so it fails as an unresolved
+     trait call, reported at the call (see [trait_calls]), rather than as
+     an "Unbound module" with no location. *)
+  let impl_exists env mod_name =
+    match Env.find_module_by_name (Longident.Lident mod_name) env with
+    | _ -> true
+    | exception Not_found -> false
+  in
   (* `iter f arr` is curried: `App(App(iter, f), arr)`, i.e. *two* nested
      Texp_apply nodes each carrying exactly one argument -- so a call site
      can only be inspected as a whole once all of a method's arguments have
@@ -967,6 +995,9 @@ let harvest_dispatch
                   | _ -> `None)
              in
              let self_pos = self_pos_of name trait_name arity in
+             (match Option.bind self_pos (List.nth_opt dispatch_args) with
+              | Some (a : Typedtree.expression) -> record_trait_call head.exp_loc name trait_name a.exp_env a.exp_type
+              | None -> ());
              let self_result =
                match self_pos with
                | Some i -> (match List.nth_opt dispatch_args i with Some a -> classify_at a | None -> `None)
@@ -992,7 +1023,8 @@ let harvest_dispatch
                 let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) dispatch_args in
                 let mod_name, free_values, target = concrete_target name trait_name arity arg_tys type_name arg_trees in
                 (match target with
-                 | Some t when not (target_is_self mod_name) -> Hashtbl.replace table (loc_key head.exp_loc) t
+                 | Some t when not (target_is_self mod_name) && impl_exists head.exp_env mod_name ->
+                   Hashtbl.replace table (loc_key head.exp_loc) t
                  | _ -> ());
                 (* A callback argument passed bare (e.g. `println` in `iter
                    println arr`) never appears as the head of its own
@@ -1141,10 +1173,11 @@ let harvest_dispatch
              (match self_pos_of name trait_name arity with
               | Some i when List.length arg_tys = arity ->
                 let env, self_ty = List.nth arg_tys i in
+                record_trait_call e.exp_loc name trait_name env self_ty;
                 (match classify_texpr env self_ty with
                  | Some (Ty (type_name, arg_trees)) ->
                    (match concrete_target name trait_name arity arg_tys type_name arg_trees with
-                    | mod_name, _, Some t when not (target_is_self mod_name) ->
+                    | mod_name, _, Some t when not (target_is_self mod_name) && impl_exists e.exp_env mod_name ->
                       Hashtbl.replace table (loc_key e.exp_loc) t
                     | _ -> ())
                  | None ->
@@ -1502,6 +1535,25 @@ let collapse_spaces s =
    caller's types) is reported at the user's call that caused it, with the
    clone's own location kept as a detail. *)
 let report_type_error exn =
+  match exn with
+  | Env.Error (Lookup_error (loc, _, Unbound_value (Lident name, _)))
+    when (match Hashtbl.find_opt trait_calls (loc_key loc) with Some (n, _, _, _) -> n = name | None -> false) ->
+    (* An unresolved trait method call (see [trait_calls]), not a real
+       unknown name: say which impl is missing. *)
+    let _, trait_name, ty, kind = Hashtbl.find trait_calls (loc_key loc) in
+    let shown = match SCaml.Op_names.prettify name with p when p = name -> "`" ^ name ^ "`" | p -> p in
+    let main, sub =
+      match kind with
+      | Unknown ->
+        ( Printf.sprintf "Can't tell which impl of %s (trait `%s`) to use: the type of its argument is unknown" shown trait_name,
+          [ Location.msg "Hint: add a type annotation to fix it" ] )
+      | Function ->
+        ( Printf.sprintf "No impl of %s (trait `%s`) for a function (%s)" shown trait_name ty,
+          [ Location.msg "Hint: is an argument missing in this call?" ] )
+      | Other -> (Printf.sprintf "No impl of %s (trait `%s`) for %s" shown trait_name ty, [])
+    in
+    Location.print_report Format.err_formatter { (Location.error ~loc main) with sub }
+  | _ ->
   match Location.error_of_exn exn with
   | Some (`Ok report) ->
     let render (m : Location.msg) = SCaml.Op_names.prettify (Format_doc.asprintf "%a" Format_doc.pp_doc m.txt) in
