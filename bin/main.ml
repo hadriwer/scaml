@@ -611,8 +611,11 @@ type self_kind = Unknown | Function | Other
 let trait_calls : (string * int * int, string * string * string * self_kind) Hashtbl.t = Hashtbl.create 16
 
 let record_trait_call loc name trait_name env ty =
+  (* Expanded, so an impl's own alias (`Showable__string.a`) reads as the
+     type it stands for (`string`). *)
+  let ty = Ctype.expand_head env ty in
   let kind =
-    match Types.get_desc (Ctype.expand_head env ty) with
+    match Types.get_desc ty with
     | Tvar _ -> Unknown
     | Tarrow _ -> Function
     | _ -> Other
@@ -1752,6 +1755,11 @@ let mk_clone ~orig ~clone ~(tys : Parsetree.core_type list) ~(sig_text : string)
   let mapper = { Ast_mapper.default_mapper with location; expr } in
   annotate_params tys (mapper.expr mapper e)
 
+(* Names given by [monomorphize] to its clones (`tim2__mono1`). *)
+let is_clone_name name =
+  let rec go i = i + 6 <= String.length name && (String.sub name i 6 = "__mono" || go (i + 1)) in
+  go 0
+
 (* One monomorphization step over a structure that the probe rounds can no
    longer improve ([typed] is that same structure's probe). [cache] maps
    (function, parameter types) to an existing clone's name across steps.
@@ -1804,14 +1812,24 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
     (* Call sites with fully known parameter types -> their clone. *)
     let redirect = Hashtbl.create 8 in
     let new_clones = ref [] in
+    (* The generic functions whose own definition is being walked: a
+       recursive call from inside one (`aux (n - 1) ..`) stays on it, since
+       a clone is only bound after the original, out of its scope. *)
+    let inside = ref [] in
     let expr (it : Tast_iterator.iterator) (e : Typedtree.expression) =
       (match e.exp_desc with
-       | Texp_ident (Pident id, _, _) ->
+       | Texp_ident (Pident id, _, _) when not (List.exists (Ident.same id) !inside) ->
          (match List.find_opt (fun (gid, _) -> Ident.same gid id) !generic with
           | Some (_, (name, arity, def_key)) ->
             let params = List.map (core_of_type e.exp_env) (arrow_params arity (Ctype.expand_head e.exp_env e.exp_type)) in
-            if List.length params = arity && List.for_all Option.is_some params then begin
-              let tys = List.map Option.get params in
+            (* A partly known call (`for [1; 2] (^i -> ..)`) is cloned too,
+               its unknown parameters left as `_`: the callback's type only
+               becomes known once the clone's own trait calls (`iter`) are
+               resolved from the known ones. Never from a clone itself, so
+               a clone that stays partly generic isn't re-cloned forever. *)
+            let partial_ok = List.exists Option.is_some params && not (is_clone_name name) in
+            if List.length params = arity && (List.for_all Option.is_some params || partial_ok) then begin
+              let tys = List.map (function Some t -> t | None -> Ast_helper.Typ.any ~loc ()) params in
               let sig_text = String.concat " -> " (List.map (Format.asprintf "%a" Pprintast.core_type) tys) in
               let (f, sc, ec) = def_key in
               let key = Printf.sprintf "%s@%s:%d-%d : %s" name f sc ec sig_text in
@@ -1832,7 +1850,16 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
        | _ -> ());
       Tast_iterator.default_iterator.expr it e
     in
-    let it = { Tast_iterator.default_iterator with expr } in
+    let value_binding (it : Tast_iterator.iterator) (vb : Typedtree.value_binding) =
+      match vb.vb_pat.pat_desc with
+      | Tpat_var (id, _, _) when List.exists (fun (gid, _) -> Ident.same gid id) !generic ->
+        let saved = !inside in
+        inside := id :: saved;
+        Tast_iterator.default_iterator.value_binding it vb;
+        inside := saved
+      | _ -> Tast_iterator.default_iterator.value_binding it vb
+    in
+    let it = { Tast_iterator.default_iterator with expr; value_binding } in
     it.structure it typed;
     if Hashtbl.length redirect = 0 then (structure, false)
     else begin

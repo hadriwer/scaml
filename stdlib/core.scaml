@@ -344,7 +344,18 @@ impl arithm of list, list {
     op % l1 l2 { map2 (%) l1 l2 }
 }
 
-op @ a b { scaml_list_concat a b }
+trait concetanable {
+    type a
+    op @ of a -> a -> a
+}
+
+impl concetanable of list {
+    op @ a b { scaml_list_concat a b }
+}
+
+impl concetanable of array {
+    op @ a b { Array.append a b }
+}
 
 fn repeat n f x {
     fn aux n acc {
@@ -512,4 +523,26 @@ impl sizable of array {
 
 impl sizable of list {
     fn len { List.length }
+}
+
+// `-x` (prefix minus) on anything but a literal number is `neg x`.
+trait negatable {
+    type a
+    fn neg of a -> a
+}
+
+impl negatable of int {
+    fn neg { scaml_neg_int }
+}
+
+impl negatable of float {
+    fn neg { scaml_neg_float }
+}
+
+impl negatable of array {
+    fn neg arr { Array.map (^x -> neg x) arr }
+}
+
+impl negatable of list {
+    fn neg l { List.map (^x -> neg x) l }
 }

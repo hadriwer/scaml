@@ -393,6 +393,9 @@ let load_used_file loc path : Parsetree.structure =
 %left OP_ADD
 %left OP_MUL
 %right OP_POW
+(* Prefix `-`: tighter than every binary operator (`-2 * 3` is `(-2) * 3`),
+   looser than application (`-f x` is `-(f x)`), as in OCaml. *)
+%nonassoc UMINUS
 (* `match f x { ... }`: after the scrutinee, a `{` opens the arms rather than
    a record literal passed as one more argument (as in Rust; write
    `match f ({ x = 1 }) { ... }` for that). Only the scrutinee position is
@@ -838,14 +841,11 @@ match_case:
     { let p = Ast_helper.Pat.tuple ~loc:(mkloc $startpos(first) $endpos(rest)) (List.map (fun p -> (None, p)) (first :: rest)) Closed in
       Ast_helper.Exp.case p e }
 
-(* `x :: rest`, right-associative (`a :: b :: rest`). `::` comes from the
-   lexer as an operator like any other, so only that one is accepted here. *)
+(* `x :: rest`, right-associative (`a :: b :: rest`). The only operator
+   allowed in a pattern, besides `-` before a number (see [simple_pattern]). *)
 pattern:
-  | hd = app_pattern; c = binop; tl = pattern
+  | hd = app_pattern; c = OP_CONS; tl = pattern
     { let loc = mkloc $startpos $endpos in
-      if c <> "::" then
-        raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
-          (Printf.sprintf "operator `%s` can't be used in a pattern (only `::`)" c)));
       Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident "::") (mkloc $startpos(c) $endpos(c)))
         (Some ([], Ast_helper.Pat.tuple ~loc (List.map (fun p -> (None, p)) [ hd; tl ]) Closed)) }
   | p = app_pattern { p }
@@ -868,6 +868,18 @@ simple_pattern:
       else if is_capitalized x then Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident x) loc) None
       else Ast_helper.Pat.var ~loc (Location.mkloc x loc) }
   | n = INT { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.int n) }
+  | c = OP_ADD; n = INT
+      { let loc = mkloc $startpos $endpos in
+        if c <> "-" then
+          raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
+            (Printf.sprintf "`%s` can't be used in a pattern (only `-` before a number)" c)));
+        Ast_helper.Pat.constant ~loc (Ast_helper.Const.int (- n)) }
+  | c = OP_ADD; f = FLOAT
+      { let loc = mkloc $startpos $endpos in
+        if c <> "-" then
+          raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
+            (Printf.sprintf "`%s` can't be used in a pattern (only `-` before a number)" c)));
+        Ast_helper.Pat.constant ~loc (Ast_helper.Const.float ("-" ^ f)) }
   | s = STRING { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.string s) }
   | c = CHAR { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.char c) }
   | TRUE { mkbool_pat (mkloc $startpos $endpos) true }
@@ -903,6 +915,21 @@ expr_bin:
         let f_ident = mkident (mkloc $startpos(c) $endpos(c)) f_name in
         Ast_helper.Exp.apply ~loc:(mkloc $startpos $endpos) f_ident [(Nolabel, e1); (Nolabel, e2)] 
       }
+  (* `-1`, `-2.5`: a negative literal. `-e` on anything else is a call to
+     the stdlib's `neg` (trait `negatable`), so it works on every type that
+     implements it, like the binary operators do. Only after an operator or
+     where an expression starts: `f -1` stays a subtraction, write `f (-1)`. *)
+  | c = OP_ADD; e = expr_bin %prec UMINUS
+      { let loc = mkloc $startpos $endpos in
+        if c <> "-" then
+          raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
+            (Printf.sprintf "`%s` can't be used as a prefix operator (only `-`)" c)));
+        match e.pexp_desc with
+        | Pexp_constant { pconst_desc = Pconst_integer (n, None); _ } when n.[0] <> '-' ->
+          Ast_helper.Exp.constant ~loc (Ast_helper.Const.integer ("-" ^ n))
+        | Pexp_constant { pconst_desc = Pconst_float (f, None); _ } when f.[0] <> '-' ->
+          Ast_helper.Exp.constant ~loc (Ast_helper.Const.float ("-" ^ f))
+        | _ -> Ast_helper.Exp.apply ~loc (mkident (mkloc $startpos(c) $endpos(c)) "neg") [ (Nolabel, e) ] }
   | e = app %prec below_arms { e }
 
 tuple:

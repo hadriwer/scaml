@@ -5,6 +5,8 @@ let scaml_list_concat = (@)
 let scaml_int_of_float = int_of_float
 let scaml_float_of_int = float_of_int
 (* ARITHM *)
+let scaml_neg_int = ( ~- )
+let scaml_neg_float = ( ~-. )
 let scaml_add_int = ( + )
 let scaml_min_int = ( - )
 let scaml_tim_int = ( * )
