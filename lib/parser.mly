@@ -354,12 +354,15 @@ let mkoverloadimpl loc trait_name (tys : string list) (methods : structure_item 
       | _ -> item)
     methods
 
-(* [#use "path"]: [path] is plain OCaml (not SCaml), so it's parsed with
-   OCaml's own parser (Parse.implementation, the same entry point ocamlopt
-   itself uses for a .ml file) rather than our lexer/parser, and its
-   top-level bindings are spliced in directly -- no separate compilation
-   unit, no .cmi. [Embedded.file] is checked first, so the stdlib's own
+(* [#use "path"]: its top-level bindings are spliced in directly -- no
+   separate compilation unit, no .cmi. A `.scaml` file is parsed as SCaml
+   (through [Embedded.parse_scaml]), only once per program even if several
+   files `#use` it; anything else is plain OCaml, parsed with OCaml's own
+   parser (Parse.implementation, the same entry point ocamlopt itself uses
+   for a .ml file). [Embedded.file] is checked first, so
    `#use "stdlib/..."` resolves to the copy built into the compiler. *)
+let used_scaml : (string, unit) Hashtbl.t = Hashtbl.create 16
+
 let load_used_file loc path : Parsetree.structure =
   let contents =
     match !Embedded.file path with
@@ -368,9 +371,17 @@ let load_used_file loc path : Parsetree.structure =
       try In_channel.with_open_bin path In_channel.input_all
       with Sys_error msg -> raise (Location.Error (Location.error ~loc msg))
   in
-  let lexbuf = Lexing.from_string contents in
-  Lexing.set_filename lexbuf path;
-  Parse.implementation lexbuf
+  if Filename.check_suffix path ".scaml" then begin
+    if Hashtbl.mem used_scaml path then []
+    else begin
+      Hashtbl.add used_scaml path ();
+      !Embedded.parse_scaml path contents
+    end
+  end else begin
+    let lexbuf = Lexing.from_string contents in
+    Lexing.set_filename lexbuf path;
+    Parse.implementation lexbuf
+  end
 %}
 
 %token <int> INT
@@ -447,6 +458,9 @@ type_atom:
         Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident c) loc) [ arg ] }
   | LPAREN; t = type_declaration; RPAREN
       { t }
+  (* A tuple type, written like a tuple value: `(int, int)`. *)
+  | LPAREN; t = type_declaration; COMMA; ts = separated_nonempty_list(COMMA, type_declaration); RPAREN
+      { Ast_helper.Typ.tuple ~loc:(mkloc $startpos $endpos) (List.map (fun t -> (None, t)) (t :: ts)) }
 
 type_declaration_trait_def:
   | ty = IDENT; rest = type_declaration_trait_def

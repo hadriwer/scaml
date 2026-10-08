@@ -519,6 +519,37 @@ let path_is_x_field (path : Path.t) : string option =
   | Pdot (Pident id, field) when Ident.name id = "X" -> Some field
   | _ -> None
 
+(* A type seen from inside a generic impl, built from known types and that
+   impl's own functor parameter fields (`X.a`), at any depth: `X.a array
+   array` is `XCon ("array", [ XCon ("array", [ XField "a" ]) ])`. *)
+type xtree =
+  | XField of string
+  | XCon of string * xtree list
+
+let rec xtree_has_field = function
+  | XField _ -> true
+  | XCon (_, args) -> List.exists xtree_has_field args
+
+(* [ty] as an [xtree], if every leaf is a known type or an `X.<field>`; a
+   `tupleN` stands for a tuple, as in [type_tree]. *)
+let rec classify_x (env : Env.t) (ty : Types.type_expr) : xtree option =
+  let ty = Ctype.expand_head env ty in
+  let all f l =
+    let r = List.map f l in
+    if List.for_all Option.is_some r then Some (List.map Option.get r) else None
+  in
+  match Types.get_desc ty with
+  | Tconstr (path, [], _) when path_is_x_field path <> None -> Option.map (fun f -> XField f) (path_is_x_field path)
+  | Tconstr (path, args, _) ->
+    (match known_type_name path with
+     | Some n -> Option.map (fun args -> XCon (n, args)) (all (classify_x env) args)
+     | None -> None)
+  | Ttuple components ->
+    Option.map
+      (fun args -> XCon (Printf.sprintf "tuple%d" (List.length args), args))
+      (all (fun (_, t) -> classify_x env t) components)
+  | _ -> None
+
 (* Every `module type` again (see [collect_trait_methods]): the abstract
    type names it declares, in order -- the same list [item]'s TRAIT rule in
    lib/parser.mly computed and used to decide the "self" vs. "other" types
@@ -555,6 +586,9 @@ type concrete_ref =
   (* A full type with its arguments (`int list` for a fold's `acc`), not
      just a head name, which on its own (`type acc = list`) isn't a type. *)
   | ConcreteTree of type_tree
+  (* A type built on that functor parameter, at any depth (`X.a array`, for
+     `iter` on an `X.a array array`). *)
+  | ViaXTree of xtree
 
 (* [tree] as a type expression: `Ty ("list", [Ty ("int", [])])` is `int
    list`, a `tupleN` is a tuple. *)
@@ -976,9 +1010,15 @@ let harvest_dispatch
                   | Tconstr (path, [ arg_ty ], _) when known_type_name path <> None ->
                     let container = Option.get (known_type_name path) in
                     (match Types.get_desc (Ctype.expand_head a.exp_env arg_ty) with
-                     | Tconstr (apath, [], _) ->
-                       (match path_is_x_field apath with Some field -> `ContainerX (container, field) | None -> `None)
-                     | _ -> `None)
+                     | Tconstr (apath, [], _) when path_is_x_field apath <> None ->
+                       `ContainerX (container, Option.get (path_is_x_field apath))
+                     (* A container of something itself built on the
+                        functor parameter (`X.a array array`, `(int * X.a)
+                        list`): the element type is passed whole. *)
+                     | _ ->
+                       (match classify_x a.exp_env arg_ty with
+                        | Some elem when xtree_has_field elem -> `ContainerXTree (container, elem)
+                        | _ -> `None))
                   (* A tuple mixing known types and the enclosing impl's own
                      element type (`print (i, a)` inside `showable of rle`,
                      an `int * X.a`): each component known or that field. *)
@@ -1044,7 +1084,7 @@ let harvest_dispatch
                 let self_name = self_name_of trait_name in
                 let concrete_of_abstract =
                   (match self_name with Some s -> [ (s, type_name) ] | None -> [])
-                  @ List.filter_map (function n, Concrete t -> Some (n, t) | n, ConcreteTree t -> Some (n, ty_name t) | _, ViaX _ -> None) free_values
+                  @ List.filter_map (function n, Concrete t -> Some (n, t) | n, ConcreteTree t -> Some (n, ty_name t) | _, (ViaX _ | ViaXTree _) -> None) free_values
                   @ (try List.combine _tied_names arg_type_names with Invalid_argument _ -> [])
                 in
                 (match Hashtbl.find_opt domains_of_name name with
@@ -1102,6 +1142,35 @@ let harvest_dispatch
                 (match !current_impl_module with
                  | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
                  | None -> ())
+              | `ContainerXTree (base, elem) ->
+                let mod_name = impl_module_name trait_name base in
+                if not (target_is_self mod_name) then
+                  (match Hashtbl.find_opt dict_requirements mod_name with
+                   | Some (_, needed_trait) ->
+                     (* That impl needs a value from its element (e.g.
+                        `showable of array` printing each one): pass the
+                        element's own dictionary, built down to the
+                        enclosing impl's functor parameter `X`, which then
+                        must satisfy that trait too (`print m.rows` on an
+                        `X.a array array` -> `Showable__array
+                        (Showable__array (X))`). *)
+                     let rec dict_for trait = function
+                       | XField field ->
+                         (match !current_impl_module with
+                          | Some m -> add_dict_requirement m (field, trait)
+                          | None -> ());
+                         Dict ("X", [])
+                       | XCon (n, args) ->
+                         let m = impl_module_name trait n in
+                         let sub = match Hashtbl.find_opt dict_requirements m with Some (_, t) -> t | None -> trait in
+                         Dict (m, List.map (dict_for sub) args)
+                     in
+                     Hashtbl.replace table (loc_key head.exp_loc) (Functored (mod_name, DictModule (dict_for needed_trait elem)))
+                   | None ->
+                     (match all_param_names other_names 1 with
+                      | [ only_field ] ->
+                        Hashtbl.replace table (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaXTree elem) ]))
+                      | _ -> ()))
               | `ContainerX (base, field) ->
                 let mod_name = impl_module_name trait_name base in
                 if not (target_is_self mod_name) then
@@ -1295,6 +1364,17 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
                           (Location.mkloc (Longident.Ldot (Location.mkloc (Longident.Lident "X") loc, Location.mkloc field loc)) loc)
                           []
                       | ConcreteTree tree -> core_of_tree loc tree
+                      | ViaXTree tree ->
+                        let rec core = function
+                          | XField f ->
+                            Ast_helper.Typ.constr ~loc
+                              (Location.mkloc (Longident.Ldot (Location.mkloc (Longident.Lident "X") loc, Location.mkloc f loc)) loc)
+                              []
+                          | XCon (n, args) when String.length n > 5 && String.sub n 0 5 = "tuple" ->
+                            Ast_helper.Typ.tuple ~loc (List.map (fun t -> (None, core t)) args)
+                          | XCon (n, args) -> Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident n) loc) (List.map core args)
+                        in
+                        core tree
                     in
                     Ast_helper.Str.type_ ~loc Asttypes.Recursive
                       [ Ast_helper.Type.mk ~loc ~manifest (Location.mkloc field_name loc) ])
@@ -2037,16 +2117,17 @@ let parse_scaml_file (filename : string) : Parsetree.structure =
   in
   parse_scaml_string filename contents
 
-(* Every `.scaml` file under stdlib/ is compiled into every program
-   automatically, so its `fn`/`op`/`trait`/`impl` are always available with
-   no explicit `#use`. The files are embedded in the compiler at build time
-   ([Stdlib_files], generated by bin/embed), already sorted for a
-   deterministic build, so this works from any cwd or install location. *)
+(* stdlib/core.scaml is compiled into every program automatically, so its
+   `fn`/`op`/`trait`/`impl` are always available with no explicit `#use`.
+   The other stdlib files (e.g. stdlib/matrix.scaml) are opt-in, with
+   `#use "stdlib/<name>.scaml"`. The files are embedded in the compiler at
+   build time ([Stdlib_files], generated by bin/embed), so this works from
+   any cwd or install location. *)
 let load_stdlib () : Parsetree.structure =
   SCaml.Embedded.file := (fun path -> List.assoc_opt path Stdlib_files.files);
-  Stdlib_files.files
-  |> List.filter (fun (f, _) -> Filename.check_suffix f ".scaml")
-  |> List.concat_map (fun (f, contents) -> parse_scaml_string f contents)
+  SCaml.Embedded.parse_scaml := parse_scaml_string;
+  let core = "stdlib/core.scaml" in
+  parse_scaml_string core (List.assoc core Stdlib_files.files)
 
 (* Overriding a stdlib function or operator is allowed, with a warning.
 

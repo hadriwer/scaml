@@ -1,0 +1,138 @@
+type a matrix {
+    arr of a array array ;
+    shape of (int, int)
+}
+
+fn copy_ m {
+    Array.map Array.copy m
+}
+
+fn print_shape m {
+    println m.shape;
+}
+
+fn make_matrix n m e {
+    { arr = Array.make_matrix n m e ; shape = (n, m) }
+}
+
+fn transpose_ a {
+    let rows = Array.length a;
+    let cols = if rows == 0 then 0 else Array.length (a[0]);
+    Array.init_matrix cols rows (^i j -> a[j,i])
+}
+
+fn transpose m {
+    let (x, y) = m.shape;
+    { arr = transpose_ m.arr ; shape = (y, x) }
+}
+
+fn init_matrix n m f {
+    { arr = Array.init_matrix n m f ; shape = (n, m) }
+}
+
+fn identity n {
+    { arr = Array.init_matrix n n (^i j -> if i == j then 1 else 0) ; shape = (n, n) }
+}
+
+impl concetanable of matrix {
+    op @ m1 m2 {
+        let (x, y) = m1.shape;
+        let (x', y') = m2.shape;
+        if y != y'
+        then
+            failwith "error operator '@' : impossible to concatenate matrix with different column size."
+        else {
+            { arr = m1.arr @ m2.arr; shape = (x + x', y) }
+        }
+    }
+}
+
+impl indexable of matrix, int {
+    op [] m i { m.arr[i] }
+    op []= m i row { m.arr[i] = row }
+}
+
+impl iterable of matrix {
+    fn iter f m { Array.iter (^row -> Array.iter f row) m.arr }
+    fn iteri f m {
+        let (_, cols) = m.shape;
+        Array.iteri (^i row -> Array.iteri (^j x -> f (i * cols + j) x) row) m.arr
+    }
+}
+
+impl mappable of matrix {
+    fn map f m {
+        { arr = map (map f) m.arr; shape = m.shape }
+    }
+    fn mapi f m {
+        let (_, cols) = m.shape;
+        { arr = mapi (^i row -> mapi (^j x -> f (i * cols + j) x) row) m.arr; shape = m.shape }
+    }
+    fn map2 f m1 m2 {
+        { arr = map2 (map2 f) m1.arr m2.arr; shape = m1.shape }
+    }
+}
+
+impl arithm of matrix, matrix {
+    op + m1 m2 { { arr = m1.arr + m2.arr; shape = m1.shape } }
+    op - m1 m2 { { arr = m1.arr - m2.arr; shape = m1.shape } }
+    op * m1 m2 { { arr = m1.arr * m2.arr; shape = m1.shape } }
+    op / m1 m2 { { arr = m1.arr / m2.arr; shape = m1.shape } }
+    op % m1 m2 { { arr = m1.arr % m2.arr; shape = m1.shape } }
+}
+
+impl arithm of matrix, int {
+    op + m1 i { { arr = m1.arr + i; shape = m1.shape } }
+    op - m1 i { { arr = m1.arr - i; shape = m1.shape } }
+    op * m1 i { { arr = m1.arr * i; shape = m1.shape } }
+    op / m1 i { { arr = m1.arr / i; shape = m1.shape } }
+    op % m1 i { { arr = m1.arr % i; shape = m1.shape } }
+}
+
+impl arithm of int, matrix {
+    op + i m { { arr = i + m.arr; shape = m.shape } }
+    op - i m { { arr = i - m.arr; shape = m.shape } }
+    op * i m { { arr = i * m.arr; shape = m.shape } }
+    op / i m { { arr = i / m.arr; shape = m.shape } }
+    op % i m { { arr = i % m.arr; shape = m.shape } }
+}
+
+impl showable of matrix {
+    fn print m {
+        let strs = Array.map (^row -> Array.map (^x -> to_string x) row) m.arr;
+        let width = Array.fold_left (^w row -> Array.fold_left (^w s -> max w (String.length s)) w row) 0 strs;
+
+        iteri (^i row -> {
+            if i > 0 then print "\n" else ();
+            iteri (^j s -> {
+                if j > 0 then print " " else ();
+                print (String.make (width - String.length s) (Char.chr 32));
+                print s;
+            }) row;
+        }) strs;
+        println ();
+    }
+
+    fn println m { print m; println (); }
+}
+
+fn trace m {
+    let (x, y) = m.shape;
+
+    if x != y
+    then
+        failwith "error trace : matrix must be square so shape.x == shape.y"
+    else
+        fold_left (^acc i -> m[i,i] + acc) 0 (0..x)
+}
+
+op *. m1 m2 {
+    let (m, n) = m1.shape;
+    let (n', p) = m2.shape;
+    if n != n' || n == 0
+    then
+        failwith "error operator '*.' : the number of columns of m1 must equal the number of rows of m2."
+    else
+        init_matrix m p (^i j ->
+            fold_left (^acc k -> acc + m1[i, k] * m2[k, j]) (m1[i, 0] * m2[0, j]) (1..n))
+}
