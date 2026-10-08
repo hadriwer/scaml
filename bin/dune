@@ -1,5 +1,5 @@
 (executable
- (public_name SCaml)
+ (public_name scamlc)
  (name main)
  (modules main stdlib_files)
  (libraries SCaml compiler-libs.common))

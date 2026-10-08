@@ -27,11 +27,31 @@ with the OCaml toolchain: `SCaml → OCaml → native binary`.
 
 ## Usage
 
+Install the `scamlc` compiler once, from the repository root:
+
 ```bash
 dune build
-dune exec bin/main.exe -- examples/hello.scaml
-./examples/hello.exe
+dune install
 ```
+
+This copies `scamlc` into your opam switch's `bin/` directory, so you can then
+compile and run a program from any directory on your machine:
+
+```bash
+scamlc hello.scaml
+./hello.exe
+```
+
+The standard library is embedded in the binary, so `scamlc` does not need the
+repository to be present. It does need your opam switch to be active in the
+shell (`eval $(opam env)`, usually added to your shell config by `opam init`):
+that is what puts `scamlc` on your `PATH`, and `scamlc` calls
+`ocamlfind ocamlopt` from the same switch to build the executable.
+
+The installed `scamlc` is a copy: after changing the compiler, re-run
+`dune build && dune install` from the repository root. During
+development you can also skip the install with
+`dune exec scamlc -- examples/hello.scaml`.
 
 Use `--keep` (`-k`) to keep the generated OCaml source and intermediate files.
 

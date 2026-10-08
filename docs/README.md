@@ -14,10 +14,11 @@ language with a lightweight, Rust-inspired syntax that compiles to OCaml.
 ## Running the examples
 
 Every snippet in these pages is a complete program unless stated otherwise.
-Save it as `hello.scaml`, then from the repository root:
+Save it as `hello.scaml`, then (once `scamlc` is installed, see the
+[main README](../README.md#usage)):
 
 ```bash
-dune exec bin/main.exe -- hello.scaml
+scamlc hello.scaml
 ./hello.exe
 ```
 
