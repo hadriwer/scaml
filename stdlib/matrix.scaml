@@ -100,14 +100,27 @@ impl arithm of int, matrix {
 impl showable of matrix {
     fn print m {
         let strs = Array.map (^row -> Array.map (^x -> to_string x) row) m.arr;
-        let width = Array.fold_left (^w row -> Array.fold_left (^w s -> max w (String.length s)) w row) 0 strs;
+        let (_, cols) = m.shape;
+        // one width per column, so a wide cell doesn't stretch the others
+        let widths = Array.make cols 0;
+        iter (^row -> iteri (^j s -> widths[j] = max widths[j] (String.length s)) row) strs;
+
+        // numbers are right-aligned, anything else (None, Some x, ...) left-aligned
+        fn is_number s {
+            if String.length s == 0 then false
+            else {
+                let c = Char.code (s[0]);
+                (c >= 48 && c <= 57) || c == 45
+            }
+        }
 
         iteri (^i row -> {
             if i > 0 then print "\n" else ();
             iteri (^j s -> {
-                if j > 0 then print " " else ();
-                print (String.make (width - String.length s) (Char.chr 32));
-                print s;
+                if j > 0 then print "  " else ();
+                let pad = String.make (widths[j] - String.length s) (Char.chr 32);
+                if is_number s then { print pad; print s; }
+                else { print s; if j < cols - 1 then print pad else (); }
             }) row;
         }) strs;
         println ();

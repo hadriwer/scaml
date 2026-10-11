@@ -264,6 +264,12 @@ impl arithm of int, string {
     op * a b { b * a }
 }
 
+impl conversionnable of option {
+    fn to_int o { match o { None -> 1 | Some _ -> 0 } }
+    fn to_float o { to_float (to_int o) }
+    fn to_string o { match o { None -> "None" | Some w -> "Some " + (to_string w)} }
+}
+
 impl arithm of array, int {
     op + arr el { map (^x -> x + el) arr }
     op - arr el { map (^x -> x - el) arr }
