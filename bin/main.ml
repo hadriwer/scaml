@@ -1680,15 +1680,183 @@ let report_type_error exn =
 
 (* Runs the probe typecheck and hands back the resulting Typedtree.structure,
    to be walked by [harvest_dispatch]. *)
+(* `SCAML_TIME=1 scamlc f.scaml`: CPU time spent in each phase, on stderr. *)
+let timing = Sys.getenv_opt "SCAML_TIME" <> None
+let phase_times : (string, float * int) Hashtbl.t = Hashtbl.create 16
+let phase_order = ref []
+let timed name f =
+  if not timing then f ()
+  else begin
+    let t0 = Sys.time () in
+    let r = f () in
+    let dt = Sys.time () -. t0 in
+    (match Hashtbl.find_opt phase_times name with
+     | Some (t, n) -> Hashtbl.replace phase_times name (t +. dt, n + 1)
+     | None -> phase_order := name :: !phase_order; Hashtbl.replace phase_times name (dt, 1));
+    r
+  end
+let report_times () =
+  if timing then
+    List.iter (fun name ->
+      let t, n = Hashtbl.find phase_times name in
+      Printf.eprintf "%-28s %7.3fs  x%d\n%!" name t n)
+      (List.rev !phase_order)
+
+(* The probe's items as typed by the last [probe_typecheck], each with its
+   signature and the environment right after it, and the environment they
+   started from. Between two rounds only a few items change (a call
+   rewritten to its impl, a clone inserted), so the next probe types only
+   those again and reuses the rest -- typing item by item, as the toplevel
+   does. An item is only reused when typing it again could give nothing
+   else, i.e. when everything before it is unchanged, or changed in a way
+   that no later item can see:
+   - an item rewritten without its signature changing (a function, or an
+     impl's module): typed again, and the later items keep seeing the old
+     one, which declares the same; a value's bound [Ident.t]s are renamed
+     back to the old ones, so the later items' references to them (which
+     [monomorphize] and [used_toplevel_bindings] match by [Ident.t]) still
+     hold;
+   - an item inserted that only binds new names (a clone): later items
+     can't refer to it without having changed themselves.
+   - an item removed that bound only values no later item mentions.
+   Anything else (a signature changed, ...) types everything after it
+   again. *)
+let probe_cache : (Env.t * (Parsetree.structure_item * Typedtree.structure_item list * Types.signature * Env.t) list) option ref =
+  ref None
+
+(* The values a signature binds, if it binds nothing else. *)
+let sig_values (sg : Types.signature) =
+  let values = List.filter_map (function Types.Sig_value (id, vd, _) -> Some (id, vd) | _ -> None) sg in
+  if List.length values = List.length sg then Some values else None
+
+(* [new_sg] declares the same things as [old_sg], with the same types: the
+   pairs of the values' [Ident.t]s, new to old (none for a module, a type,
+   ...: nothing matches those by [Ident.t]). *)
+let same_signature (new_sg : Types.signature) (old_sg : Types.signature) =
+  let text sg = Format.asprintf "%a" Printtyp.signature sg in
+  if text new_sg <> text old_sg then None
+  else
+    match sig_values new_sg, sig_values old_sg with
+    | Some nv, Some ov when List.length nv = List.length ov -> Some (List.map2 (fun (n, _) (o, _) -> (n, o)) nv ov)
+    | _ -> Some []
+
+(* [items] with the [Ident.t]s of [pairs] renamed, where bound and used. *)
+let rename_idents (pairs : (Ident.t * Ident.t) list) (items : Typedtree.structure_item list) =
+  let find id = List.find_map (fun (a, b) -> if Ident.same a id then Some b else None) pairs in
+  let pat : type k. Tast_mapper.mapper -> k Typedtree.general_pattern -> k Typedtree.general_pattern =
+    fun m p ->
+      let p = Tast_mapper.default.pat m p in
+      match p.pat_desc with
+      | Tpat_var (id, n, uid) ->
+        (match find id with Some id' -> { p with pat_desc = Tpat_var (id', n, uid) } | None -> p)
+      | _ -> p
+  in
+  let expr (m : Tast_mapper.mapper) (e : Typedtree.expression) =
+    let e = Tast_mapper.default.expr m e in
+    match e.exp_desc with
+    | Texp_ident (Path.Pident id, lid, vd) ->
+      (match find id with Some id' -> { e with exp_desc = Texp_ident (Path.Pident id', lid, vd) } | None -> e)
+    | _ -> e
+  in
+  let m = { Tast_mapper.default with pat; expr } in
+  List.map (m.structure_item m) items
+
+(* Only binds values that [env] doesn't have yet. *)
+let binds_new_values env (sg : Types.signature) =
+  match sig_values sg with
+  | Some values ->
+    List.for_all
+      (fun (id, _) ->
+        match Env.find_value_by_name (Longident.Lident (Ident.name id)) env with
+        | _ -> false
+        | exception Not_found -> true)
+      values
+  | None -> false
+
 let probe_typecheck env (methods : (string * string * string list * (string * int) option list) list) (user_structure : Parsetree.structure) : Typedtree.structure =
   let probe_structure = build_probe_prelude methods @ user_structure @ [ entry_point ] in
-  match Typemod.type_structure env probe_structure with
-  | (typedtree, _, _, _, _) -> typedtree
-  | exception exn ->
+  let fail exn =
     (* The last-resort pass handles its own failure (falls back). *)
     if !default_free_type_vars then raise exn;
     report_type_error exn;
     exit 1
+  in
+  if !default_free_type_vars then begin
+    (* The last-resort rounds read types differently (see [defaultable]):
+       typed from scratch, and not cached. *)
+    probe_cache := None;
+    match Typemod.type_structure env probe_structure with
+    | (typedtree, _, _, _, _) -> typedtree
+    | exception exn -> fail exn
+  end else begin
+    let cached = match !probe_cache with Some (env0, items) when env0 == env -> items | _ -> [] in
+    let type_item env item =
+      match Typemod.type_structure env [ item ] with
+      | (t, sg, _, _, env') -> (t.Typedtree.str_items, sg, env')
+      | exception exn -> fail exn
+    in
+    (* [exact]: [env] is the very environment the cached items were typed
+       in, so a reused item's own environment after it is right too; once
+       an item was inserted, it's only equivalent, and the reused item's
+       signature is added to it instead. *)
+    (* For each name, the last item that mentions it: an item removed can
+       be skipped over if no item from there on mentions what it bound. *)
+    let last_mention = Hashtbl.create 256 in
+    List.iteri
+      (fun i item ->
+        let expr (it : Ast_iterator.iterator) (e : Parsetree.expression) =
+          (match e.pexp_desc with
+           | Pexp_ident { txt = Longident.Lident name; _ } -> Hashtbl.replace last_mention name i
+           | _ -> ());
+          Ast_iterator.default_iterator.expr it e
+        in
+        let it = { Ast_iterator.default_iterator with expr } in
+        it.structure_item it item)
+      probe_structure;
+    let removable i (sg : Types.signature) =
+      match sig_values sg with
+      | Some values ->
+        List.for_all
+          (fun (id, _) -> match Hashtbl.find_opt last_mention (Ident.name id) with Some j -> j < i | None -> true)
+          values
+      | None -> false
+    in
+    let same (item' : Parsetree.structure_item) item = item' == item || item' = item in
+    let rec reappears item cached n =
+      n > 0 && (match cached with (item', _, _, _) :: rest -> same item' item || reappears item rest (n - 1) | [] -> false)
+    in
+    let rec go cached items i env exact acc =
+      match items with
+      | [] -> (acc, env)
+      | item :: items' ->
+        (match cached with
+         | (item', ti, sg, env') :: cached' when same item' item ->
+           let env_next = if exact then env' else Env.add_signature sg env in
+           go cached' items' (i + 1) env_next exact ((item, ti, sg, env_next) :: acc)
+         (* the cached item was removed (e.g. by [drop_unused_generics]),
+            maybe with a few more after it *)
+         | (_, _, old_sg, _) :: cached' when removable i old_sg && reappears item cached' 64 ->
+           go cached' items i env false acc
+         | (_, _, old_sg, old_env') :: cached' ->
+           let ti, sg, env' = type_item env item in
+           (match same_signature sg old_sg with
+            | Some pairs ->
+              let env_next = if exact then old_env' else Env.add_signature old_sg env in
+              go cached' items' (i + 1) env_next exact ((item, rename_idents pairs ti, old_sg, env_next) :: acc)
+            | None ->
+              if binds_new_values env sg then go cached items' (i + 1) env' false ((item, ti, sg, env') :: acc)
+              else go [] items' (i + 1) env' false ((item, ti, sg, env') :: acc))
+         | [] ->
+           let ti, sg, env' = type_item env item in
+           go [] items' (i + 1) env' false ((item, ti, sg, env') :: acc))
+    in
+    let typed, final_env = go cached probe_structure 0 env true [] in
+    let entries = List.rev typed in
+    probe_cache := Some (env, entries);
+    { Typedtree.str_items = List.concat_map (fun (_, ti, _, _) -> ti) entries;
+      str_type = List.concat_map (fun (_, _, sg, _) -> sg) entries;
+      str_final_env = final_env }
+  end
 
 (* ---- Monomorphization ----
 
@@ -2019,7 +2187,7 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
    `fn f`) doesn't count as a use of it. *)
 let used_toplevel_bindings env methods (structure : Parsetree.structure) =
   let typed = probe_typecheck env methods structure in
-  let owners = ref [] in
+  let owners = Ident.Tbl.create 256 in
   List.iteri
     (fun i (item : Typedtree.structure_item) ->
       match item.str_desc with
@@ -2029,7 +2197,7 @@ let used_toplevel_bindings env methods (structure : Parsetree.structure) =
             (* Keyed by the bound name's own location: a pattern's location
                may well be `Location.none` (lib/parser.mly's [mkfn]). *)
             match vb.vb_pat.pat_desc with
-            | Tpat_var (id, name, _) -> owners := (id, (i, loc_key name.loc)) :: !owners
+            | Tpat_var (id, name, _) -> Ident.Tbl.replace owners id (i, loc_key name.loc)
             | _ -> ())
           vbs
       | _ -> ())
@@ -2040,8 +2208,8 @@ let used_toplevel_bindings env methods (structure : Parsetree.structure) =
       let expr it (e : Typedtree.expression) =
         (match e.exp_desc with
          | Texp_ident (Path.Pident id, _, _) ->
-           (match List.find_opt (fun (id', _) -> Ident.same id id') !owners with
-            | Some (_, (j, key)) when j <> i -> Hashtbl.replace used key ()
+           (match Ident.Tbl.find_opt owners id with
+            | Some (j, key) when j <> i -> Hashtbl.replace used key ()
             | _ -> ())
          | _ -> ());
         Tast_iterator.default_iterator.expr it e
@@ -2270,8 +2438,8 @@ let () =
        *before* the user's own file is parsed, or the user's file's own
        `+`/`-`/... would fall back to plain OCaml's native (monomorphic)
        operators instead of the trait-dispatched ones. *)
-    let stdlib_structure = with_tuple_impls (load_stdlib ()) in
-    let user_file_structure = parse_scaml_file filename in
+    let stdlib_structure = timed "parse stdlib" (fun () -> with_tuple_impls (load_stdlib ())) in
+    let user_file_structure = timed "parse user file" (fun () -> parse_scaml_file filename) in
     let stdlib_structure, user_file_structure = warn_stdlib_overrides stdlib_structure user_file_structure in
     let user_structure = stdlib_structure @ user_file_structure in
 
@@ -2285,6 +2453,8 @@ let () =
     (* Probe typecheck + rewrite modules in ast + ocaml typecheck*)
     let trait_methods = collect_trait_methods user_structure in
     collect_user_type_names user_structure;
+    (* The resolved structure, once it type-checked as a whole. *)
+    let typechecked : Parsetree.structure option ref = ref None in
     let user_structure =
       if trait_methods = [] then user_structure
       else begin
@@ -2306,27 +2476,30 @@ let () =
            on from them instead of starting from scratch. *)
         let last_dict_requirements = ref (Hashtbl.create 16) in
         let rec rounds n dict_requirements structure =
-          let typed_probe = probe_typecheck env trait_methods structure in
+          let typed_probe = timed "probe typecheck" (fun () -> probe_typecheck env trait_methods structure) in
           if !default_free_type_vars then protect_bound_vars typed_probe;
           let dispatch_table, dict_requirements =
-            harvest_dispatch trait_methods abstract_types ctor_methods overloads dict_requirements typed_probe
+            timed "harvest dispatch" (fun () -> harvest_dispatch trait_methods abstract_types ctor_methods overloads dict_requirements typed_probe)
           in
           last_dict_requirements := dict_requirements;
           let rewritten =
-            rewrite_dispatch dispatch_table structure |> upgrade_dict_impls dict_requirements abstract_types
+            timed "rewrite dispatch" (fun () -> rewrite_dispatch dispatch_table structure |> upgrade_dict_impls dict_requirements abstract_types)
           in
           if n <= 1 then rewritten
-          else if rewritten <> structure then rounds (n - 1) dict_requirements rewritten
+          else if timed "compare structures" (fun () -> rewritten <> structure) then rounds (n - 1) dict_requirements rewritten
           else
-            match monomorphize method_names mono_cache mono_counter typed_probe rewritten with
+            match timed "monomorphize" (fun () -> monomorphize method_names mono_cache mono_counter typed_probe rewritten) with
             | mono, true -> rounds (n - 1) dict_requirements mono
             | _, false -> rewritten
         in
-        let resolved = rounds 32 (Hashtbl.create 16) user_structure |> drop_unused_generics env trait_methods method_names in
+        let resolved = rounds 32 (Hashtbl.create 16) user_structure in
+        let resolved = timed "drop unused generics" (fun () -> drop_unused_generics env trait_methods method_names resolved) in
         let typechecks s =
-          match Typemod.type_structure env (s @ [ entry_point ]) with _ -> true | exception _ -> false
+          match Typemod.type_structure env (s @ [ entry_point ]) with
+          | _ -> typechecked := Some s; true
+          | exception _ -> false
         in
-        if typechecks resolved then resolved
+        if timed "check resolved" (fun () -> typechecks resolved) then resolved
         else begin
           (* Something is still unresolved, e.g. `println (last [])`, whose
              element type nothing fixes: retry with such free type variables
@@ -2347,19 +2520,24 @@ let () =
     in
     let full_structure = (* prelude @ *) user_structure @ [ entry_point ] in
 
-    (try ignore (Typemod.type_structure env full_structure)
-     with exn ->
-       report_type_error exn;
-       exit 1);
+    (* Already done if it's the structure [typechecks] accepted. *)
+    (match !typechecked with
+     | Some s when s == user_structure -> ()
+     | _ ->
+       (try timed "final typecheck" (fun () -> ignore (Typemod.type_structure env full_structure))
+        with exn ->
+          report_type_error exn;
+          exit 1));
     if verbose then print_endline "Typecheck OK";
 
     (* Only after the full structure (stdlib included) has been type-checked
        as a whole -- trimming first could silently hide a real error in
        something unused. Pruning here only ever drops siblings nothing kept
        depends on, so it can't change whether what remains still type-checks. *)
-    let full_structure = eliminate_dead_code full_structure in
+    let full_structure = timed "dead code" (fun () -> eliminate_dead_code full_structure) in
 
-    let ocaml_src = Format.asprintf "%a" Pprintast.structure full_structure in
+    let ocaml_src = timed "print OCaml" (fun () -> Format.asprintf "%a" Pprintast.structure full_structure) in
+    report_times ();
     if verbose then Printf.printf "Generated OCaml:\n%s\n" ocaml_src;
 
     let base = Filename.remove_extension filename in
