@@ -178,6 +178,84 @@ let mkfun loc pat body =
 let mkbinop loc op e1 e2 =
   Ast_helper.Exp.apply ~loc (mkident loc op) [ (Nolabel, e1); (Nolabel, e2) ]
 
+(* `let a, b, c = 0..3;`: a range destructured into a tuple. A range is a
+   runtime value, so only a range written in the `let` itself is caught: a
+   call to `..`/`..=` (whatever name [operator_tbl] gave them), possibly
+   stepped with `+`/`-` (`let a, b = (0..10) + 5;`). *)
+let is_op_named symbol name =
+  name = symbol || List.mem name (Hashtbl.find_all operator_tbl symbol)
+
+let rec is_range_expr (e : expression) =
+  match e.pexp_desc with
+  | Pexp_apply ({ pexp_desc = Pexp_ident { txt = Longident.Lident f; _ }; _ }, [ (_, lo); _ ]) ->
+    is_op_named ".." f || is_op_named "..=" f
+    || ((is_op_named "+" f || is_op_named "-" f) && is_range_expr lo)
+  | _ -> false
+
+(* The length of `lo..hi` / `lo..=hi` when both bounds are int literals and
+   there's no step, to report a wrong number of names at compile time. *)
+let literal_range_length (e : expression) =
+  let int_lit (e : expression) =
+    match e.pexp_desc with
+    | Pexp_constant { pconst_desc = Pconst_integer (s, None); _ } -> int_of_string_opt s
+    | _ -> None
+  in
+  match e.pexp_desc with
+  | Pexp_apply ({ pexp_desc = Pexp_ident { txt = Longident.Lident f; _ }; _ }, [ (_, lo); (_, hi) ])
+    when is_op_named ".." f || is_op_named "..=" f ->
+    (match int_lit lo, int_lit hi with
+     | Some l, Some h -> Some (abs (h - l) + if is_op_named "..=" f then 1 else 0)
+     | _ -> None)
+  | _ -> None
+
+(* `let p1, ..., pN = r` ~> `let p1, ..., pN = match fold_right (fun x acc ->
+   x :: acc) r [] with [v1; ...; vN] -> (v1, ..., vN) | _ -> failwith ...`.
+   Anything else is left as it is. *)
+let desugar_range_let loc (p : pattern) (e : expression) =
+  match p.ppat_desc with
+  | Ppat_tuple (ps, Closed) when is_range_expr e ->
+    let n = List.length ps in
+    (match literal_range_length e with
+     | Some len when len <> n ->
+       raise (Location.Error (Location.error ~loc:e.pexp_loc
+         (Printf.sprintf "this range has %d element%s, but the pattern binds %d" len (if len = 1 then "" else "s") n)))
+     | _ -> ());
+    (* bin/main.ml records the overload picked for a call by its location,
+       so every generated identifier needs one of its own: [loc] for
+       `fold_right`, zero-width ones (which no real node has) for the rest. *)
+    let fresh_loc =
+      let k = ref 0 in
+      fun () ->
+        incr k;
+        let pos = { loc.Location.loc_start with Lexing.pos_cnum = loc.Location.loc_start.Lexing.pos_cnum + !k } in
+        { Location.loc_start = pos; loc_end = pos; loc_ghost = true }
+    in
+    let ident x = mkident (fresh_loc ()) x in
+    let names = List.init n (fun i -> "__range_" ^ string_of_int i) in
+    let ctor name arg = Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident name) loc) arg in
+    let pctor name arg = Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident name) loc) arg in
+    let list_pat =
+      List.fold_right
+        (fun x acc -> pctor "::" (Some ([], Ast_helper.Pat.tuple ~loc [ (None, Ast_helper.Pat.var ~loc (Location.mkloc x loc)); (None, acc) ] Closed)))
+        names (pctor "[]" None)
+    in
+    let tuple = Ast_helper.Exp.tuple ~loc (List.map (fun x -> (None, ident x)) names) in
+    let cons =
+      Ast_helper.Exp.function_ ~loc
+        (List.map (fun x -> { pparam_loc = loc; pparam_desc = Pparam_val (Nolabel, None, Ast_helper.Pat.var ~loc (Location.mkloc x loc)) }) [ "__x"; "__acc" ])
+        None
+        (Pfunction_body (ctor "::" (Some (Ast_helper.Exp.tuple ~loc [ (None, ident "__x"); (None, ident "__acc") ]))))
+    in
+    let to_list = Ast_helper.Exp.apply ~loc (mkident loc "fold_right") [ (Nolabel, cons); (Nolabel, e); (Nolabel, ctor "[]" None) ] in
+    let fail =
+      Ast_helper.Exp.apply ~loc (ident "failwith")
+        [ (Nolabel, Ast_helper.Exp.constant ~loc (Ast_helper.Const.string
+            (Printf.sprintf "let: the range doesn't have exactly %d elements" n))) ]
+    in
+    Ast_helper.Exp.match_ ~loc to_list
+      [ Ast_helper.Exp.case list_pat tuple; Ast_helper.Exp.case (Ast_helper.Pat.any ~loc ()) fail ]
+  | _ -> e
+
 let mk_fn_expr loc params body =
   let param_pats =
     match params with
@@ -803,7 +881,7 @@ block:
   | LET; p = let_pattern; EQ; e1 = expr; SEMICOLON; e2 = block
     { 
       let loc = mkloc $startpos $endpos in
-      Ast_helper.Exp.let_ ~loc Nonrecursive [ Ast_helper.Vb.mk p e1 ] e2
+      Ast_helper.Exp.let_ ~loc Nonrecursive [ Ast_helper.Vb.mk p (desugar_range_let loc p e1) ] e2
     }
   | e1 = expr; SEMICOLON; b = block
     { 
