@@ -1,0 +1,227 @@
+#use "stdlib/matrix.scaml"
+
+type complex {
+    re of float ;
+    im of float
+}
+
+fn complex re im { { re = re; im = im } }
+
+// r e^(i t)
+fn polar r t { { re = r * cos t; im = r * sin t } }
+
+fn conj z { { re = z.re; im = neg z.im } }
+
+// |z|, without overflow when re or im is huge (as OCaml's Complex.norm)
+fn modulus z {
+    let (a, b) = (abs_float z.re, abs_float z.im);
+    if a == 0. && b == 0. then 0.
+    else if a >= b then { let q = b / a; a * sqrt (1. + q * q) }
+    else { let q = a / b; b * sqrt (1. + q * q) }
+}
+
+fn arg z { atan2 z.im z.re }
+
+// principal square root, with a cut along the negative reals
+fn csqrt z {
+    let r = modulus z;
+    let x = sqrt ((r + z.re) / 2.);
+    let y = sqrt ((r - z.re) / 2.);
+    { re = x; im = if z.im < 0. then neg y else y }
+}
+
+fn cexp z { polar (exp z.re) z.im }
+
+impl arithm of complex, complex {
+    op + z w { { re = z.re + w.re; im = z.im + w.im } }
+    op - z w { { re = z.re - w.re; im = z.im - w.im } }
+    op * z w { { re = z.re * w.re - z.im * w.im; im = z.re * w.im + z.im * w.re } }
+    op / z w {
+        let d = w.re * w.re + w.im * w.im;
+        if d == 0. then failwith "error operator '/' : division of a complex by 0."
+        else { re = (z.re * w.re + z.im * w.im) / d; im = (z.im * w.re - z.re * w.im) / d }
+    }
+}
+
+impl arithm of complex, float {
+    op + z x { { re = z.re + x; im = z.im } }
+    op - z x { { re = z.re - x; im = z.im } }
+    op * z x { { re = z.re * x; im = z.im * x } }
+    op / z x { { re = z.re / x; im = z.im / x } }
+}
+
+impl arithm of float, complex {
+    op + x z { { re = x + z.re; im = z.im } }
+    op - x z { { re = x - z.re; im = neg z.im } }
+    op * x z { { re = x * z.re; im = x * z.im } }
+    op / x z { { re = x; im = 0. } / z }
+}
+
+impl arithm of complex, int {
+    op + z i { z + to_float i }
+    op - z i { z - to_float i }
+    op * z i { z * to_float i }
+    op / z i { z / to_float i }
+}
+
+impl arithm of int, complex {
+    op + i z { to_float i + z }
+    op - i z { to_float i - z }
+    op * i z { to_float i * z }
+    op / i z { to_float i / z }
+}
+
+impl negatable of complex {
+    fn neg z { { re = neg z.re; im = neg z.im } }
+}
+
+// `1. + 2.i`, `1. - 2.i`: also what a matrix of complex prints
+impl conversionnable of complex {
+    fn to_float z {
+        if z.im == 0. then z.re
+        else failwith "error to_float : the complex has an imaginary part."
+    }
+    fn to_int z { to_int (to_float z) }
+    fn to_string z {
+        if z.im < 0. then to_string z.re + " - " + to_string (neg z.im) + "i"
+        else to_string z.re + " + " + to_string z.im + "i"
+    }
+}
+
+impl showable of complex {
+    fn print z { print (to_string z) }
+    fn println z { print z; println (); }
+}
+
+// An int, float or complex as a complex, through their `+` with a complex
+// (a trait can't name `complex` in its signature).
+fn to_complex x { x + complex 0. 0. }
+
+// Householder QR of the p x p complex array array a: a = q * r, q unitary,
+// r upper triangular. Each step is h = I - 2 v v^H / |v|^2.
+fn ceig_qr_ a p {
+    let zero = complex 0. 0.;
+    let r = copy_ a;
+    let q = Array.init_matrix p p (^i j -> if i == j then complex 1. 0. else zero);
+
+    iter (^k -> {
+        let norm_x = sqrt (fold_left (^acc i -> acc + modulus r[i,k] * modulus r[i,k]) 0. (k..p));
+        let m0 = modulus r[k,k];
+        // alpha = -e^(i arg x0) |x|, so that x0 - alpha doesn't cancel out
+        let phase = if m0 == 0. then complex 1. 0. else r[k,k] / m0;
+        let alpha = phase * (0. - norm_x);
+        let v = Array.init p (^i -> if i < k then zero else if i == k then r[i,k] - alpha else r[i,k]);
+        let vn2 = fold_left (^acc i -> acc + modulus v[i] * modulus v[i]) 0. (k..p);
+
+        if vn2 > 0.000000000000000000001 then {
+            iter (^j -> {
+                let d = fold_left (^acc i -> acc + conj v[i] * r[i,j]) zero (k..p) * (2. / vn2);
+                iter (^i -> r[i,j] = r[i,j] - v[i] * d) (k..p);
+            }) (0..p);
+            iter (^i -> {
+                let d = fold_left (^acc j -> acc + q[i,j] * v[j]) zero (k..p) * (2. / vn2);
+                iter (^j -> q[i,j] = q[i,j] - d * conj v[j]) (k..p);
+            }) (0..p);
+        }
+        else ()
+    }) (0..p);
+    (q, r)
+}
+
+// Eigenvalues and eigenvectors of a square matrix of int, float or complex,
+// as complex numbers: returns (w, v) like `eig`, w the array of eigenvalues
+// and v the matrix whose column k is the (unit) eigenvector of w[k].
+// QR algorithm with Wilkinson shifts and deflation: a = qs t qs^H with t
+// upper triangular (Schur form), so also complex and same-modulus
+// eigenvalues, which `eig` can't do.
+fn eig_complex m {
+    let (n, n') = m.shape;
+    if n != n' || n == 0
+    then
+        failwith "error eig_complex : matrix must be square so shape.x == shape.y"
+    else {
+        let max_iter, tol = 1000 * n, 0.000000000001;
+        let zero = complex 0. 0.;
+        let t = Array.map (^row -> Array.map (^x -> to_complex x) row) m.arr;
+        let qs = Array.init_matrix n n (^i j -> if i == j then complex 1. 0. else zero);
+
+        // eigenvalue of the trailing 2 x 2 block of t[0..p, 0..p] closest to
+        // its last diagonal coefficient
+        fn wilkinson_shift p {
+            let (a, b, c, d) = (t[p-2,p-2], t[p-2,p-1], t[p-1,p-2], t[p-1,p-1]);
+            let h = (a - d) / 2.;
+            let s = csqrt (h * h + b * c);
+            let (l1, l2) = (d + h + s, d + h - s);
+            if modulus (l1 - d) <= modulus (l2 - d) then l1 else l2
+        }
+
+        // QR steps on the active block t[0..p, 0..p]; once its last row is ~0
+        // left of the diagonal (t isn't Hessenberg, so the whole row, not
+        // just t[p-1, p-2]), t[p-1, p-1] is an eigenvalue and the block
+        // shrinks to p - 1
+        fn reduce p it stuck {
+            if p <= 1 then ()
+            else if it >= max_iter then failwith "error eig_complex : no convergence."
+            else {
+                let scale = modulus t[p-1,p-1] + modulus t[p-2,p-2];
+                let scale = if scale == 0. then 1. else scale;
+                let off = fold_left (^acc j -> max acc (modulus t[p-1,j])) 0. (0..(p - 1));
+                if off <= tol * scale then {
+                    iter (^j -> t[p-1,j] = zero) (0..(p - 1));
+                    reduce (p - 1) it 0
+                }
+                else {
+                    // an exceptional shift every 10 steps without deflation,
+                    // in case the Wilkinson ones cycle
+                    let mu = if stuck > 0 && stuck % 10 == 0
+                             then t[p-1,p-1] + complex (0.75 * off) 0.
+                             else wilkinson_shift p;
+                    let a = Array.init_matrix p p (^i j -> if i == j then t[i,j] - mu else t[i,j]);
+                    let (q, r) = ceig_qr_ a p;
+                    // t[0..p, 0..p] = r q + mu, the rest of the rows by q^H
+                    iter (^i -> iter (^j -> {
+                        let x = fold_left (^acc l -> acc + r[i,l] * q[l,j]) zero (0..p);
+                        t[i,j] = if i == j then x + mu else x;
+                    }) (0..p)) (0..p);
+                    iter (^j -> {
+                        let col = Array.init p (^i -> fold_left (^acc l -> acc + conj q[l,i] * t[l,j]) zero (0..p));
+                        iter (^i -> t[i,j] = col[i]) (0..p);
+                    }) (p..n);
+                    iter (^i -> {
+                        let row = Array.init p (^j -> fold_left (^acc l -> acc + qs[i,l] * q[l,j]) zero (0..p));
+                        iter (^j -> qs[i,j] = row[j]) (0..p);
+                    }) (0..n);
+                    // t is now upper triangular below the active block's rows
+                    iter (^i -> iter (^j -> t[i,j] = zero) (0..i)) (p..n);
+                    reduce p (it + 1) (stuck + 1)
+                }
+            }
+        }
+        reduce n 0 0;
+
+        let w = Array.init n (^k -> t[k,k]);
+
+        // eigenvector of t for w[k] by back-substitution, then qs y
+        fn eigenvector k {
+            let y = Array.make n zero;
+            y[k] = complex 1. 0.;
+            fn back j {
+                if j < 0 then ()
+                else {
+                    let s = fold_left (^acc l -> acc + t[j,l] * y[l]) zero ((j + 1)..=k);
+                    let d = t[j,j] - w[k];
+                    let d = if modulus d < tol then complex tol 0. else d;
+                    y[j] = neg s / d;
+                    back (j - 1)
+                }
+            }
+            back (k - 1);
+            let v = Array.init n (^i -> fold_left (^acc l -> acc + qs[i,l] * y[l]) zero (0..n));
+            let norm = sqrt (fold_left (^acc z -> acc + modulus z * modulus z) 0. v);
+            Array.map (^z -> z / norm) v
+        }
+        let vs = Array.init n eigenvector;
+
+        (w, init_matrix n n (^i k -> vs[k][i]))
+    }
+}

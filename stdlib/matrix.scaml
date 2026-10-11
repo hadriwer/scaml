@@ -149,3 +149,96 @@ op *. m1 m2 {
         init_matrix m p (^i j ->
             fold_left (^acc k -> acc + m1[i, k] * m2[k, j]) (m1[i, 0] * m2[0, j]) (1..n))
 }
+
+// Product of two n x n float array array.
+fn eig_mul_ a b n {
+    Array.init_matrix n n (^i j -> fold_left (^acc k -> acc + a[i,k] * b[k,j]) 0. (0..n))
+}
+
+// Householder QR of an n x n float array array: a = q * r, q orthogonal,
+// r upper triangular.
+fn eig_qr_ a n {
+    let r = copy_ a;
+    let q = Array.init_matrix n n (^i j -> if i == j then 1. else 0.);
+
+    iter (^k -> {
+        // v = x - alpha e_k, x the column k of r below the diagonal
+        let norm_x = sqrt (fold_left (^acc i -> acc + r[i,k] * r[i,k]) 0. (k..n));
+        let alpha = if r[k,k] >= 0. then 0. - norm_x else norm_x;
+        let v = Array.init n (^i -> if i < k then 0. else if i == k then r[i,k] - alpha else r[i,k]);
+        let norm_v = sqrt (fold_left (^acc i -> acc + v[i] * v[i]) 0. (k..n));
+
+        if norm_v > 0.000000000001 then {
+            iter (^i -> v[i] = v[i] / norm_v) (k..n);
+            // r = h r and q = q h, with h = I - 2 v v^T
+            iter (^j -> {
+                let d = fold_left (^acc i -> acc + v[i] * r[i,j]) 0. (k..n);
+                iter (^i -> r[i,j] = r[i,j] - 2. * d * v[i]) (k..n);
+            }) (0..n);
+            iter (^i -> {
+                let d = fold_left (^acc j -> acc + q[i,j] * v[j]) 0. (k..n);
+                iter (^j -> q[i,j] = q[i,j] - 2. * d * v[j]) (k..n);
+            }) (0..n);
+        }
+        else ()
+    }) (0..n);
+    (q, r)
+}
+
+// Eigenvalues and eigenvectors of a square matrix, as numpy's
+// `w, v = np.linalg.eig(m)`: returns (w, v), w the array of eigenvalues and
+// v the matrix whose column k is the (unit) eigenvector of w[k].
+// QR algorithm, so only real eigenvalues: fails if it doesn't converge
+// (e.g. a rotation, whose eigenvalues are complex).
+fn eig m {
+    let (n, n') = m.shape;
+    if n != n' || n == 0
+    then
+        failwith "error eig : matrix must be square so shape.x == shape.y"
+    else {
+        let max_iter, tol = 10000, 0.0000000001;
+        let a0 = Array.map (^row -> Array.map (^x -> to_float x) row) m.arr;
+
+        // biggest coefficient under the diagonal: 0 once a is triangular
+        fn lower_off a {
+            fold_left (^acc i -> fold_left (^acc j -> max acc (abs_float a[i,j])) acc (0..i)) 0. (0..n)
+        }
+
+        // a_{k+1} = r q = q^T a_k q, so a_0 = qs a_k qs^T
+        fn iterate a qs it {
+            if lower_off a < tol then (a, qs)
+            else if it >= max_iter then failwith "error eig : no convergence, the eigenvalues may be complex."
+            else {
+                let (q, r) = eig_qr_ a n;
+                iterate (eig_mul_ r q n) (eig_mul_ qs q n) (it + 1)
+            }
+        }
+        let (t, qs) = iterate a0 (Array.init_matrix n n (^i j -> if i == j then 1. else 0.)) 0;
+
+        let w = Array.init n (^k -> t[k,k]);
+
+        // eigenvector of t for w[k]: y[k] = 1, y[j] = 0 for j > k, and
+        // back-substitution for j < k; then the one of m is qs y
+        fn eigenvector k {
+            let y = Array.make n 0.;
+            y[k] = 1.;
+            fn back j {
+                if j < 0 then ()
+                else {
+                    let s = fold_left (^acc l -> acc + t[j,l] * y[l]) 0. ((j + 1)..=k);
+                    let d = t[j,j] - w[k];
+                    let d = if abs_float d < tol then tol else d;
+                    y[j] = (0. - s) / d;
+                    back (j - 1)
+                }
+            }
+            back (k - 1);
+            let v = Array.init n (^i -> fold_left (^acc l -> acc + qs[i,l] * y[l]) 0. (0..n));
+            let norm = sqrt (fold_left (^acc x -> acc + x * x) 0. v);
+            Array.map (^x -> x / norm) v
+        }
+        let vs = Array.init n eigenvector;
+
+        (w, init_matrix n n (^i k -> vs[k][i]))
+    }
+}
