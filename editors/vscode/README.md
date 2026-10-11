@@ -30,7 +30,7 @@ themes that ship their own icon set may override it.
 ## Highlighted
 
 - `//` comments, `#use` directives
-- keywords: `fn`, `op`, `let`, `type`, `trait`, `impl`, `of`, `match`, `if`, `then`, `else`
+- keywords: `fn`, `op`, `let`, `type`, `trait`, `impl`, `of`, `match`, `if`, `then`, `else`, `try`, `with`, `exception`
 - lambdas `^x y -> ...` and their parameters
 - names declared by `fn`, `op`, `type`, `trait`, `impl`, `let`
 - constructors (`Some`, `Node`), modules (`Array.make`), record fields (`p.name`)

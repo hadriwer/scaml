@@ -278,6 +278,10 @@
           "match": "\\b(if|then|else|match)\\b"
         },
         {
+          "name": "keyword.control.exception.scaml",
+          "match": "\\b(try|with|exception)\\b"
+        },
+        {
           "name": "storage.type.scaml",
           "match": "\\b(fn|op|let|type|trait|impl)\\b"
         },
