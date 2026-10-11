@@ -469,7 +469,7 @@ let load_used_file loc path : Parsetree.structure =
 %token <string> STRING
 %token LPAREN RPAREN LBRACE RBRACE COMMA SEMICOLON EQ LBRACK RBRACK
 %token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TRAIT IMPL TYPE OF
-%token EOF DOT BAR MATCH INDEX_LBRACK LBRACKBAR BARRBRACK
+%token EOF DOT BAR MATCH INDEX_LBRACK LBRACKBAR BARRBRACK TRY WITH EXCEPTION
 
 (* Binary operators, lowest priority first, as in OCaml (see
    [Lexer.operator]): `1 + 2 * 3` is `1 + (2 * 3)`, `x :: l @ m` is
@@ -611,6 +611,13 @@ decl_item:
       { (Location.mkloc name (mkloc $startpos $endpos), args) }
 
 item:
+  (* `exception Not_positive`, `exception Bad_value of string, int`: an
+     exception, raised with `raise (Bad_value ("x", 1))`. *)
+  | EXCEPTION; d = decl_item
+      { let loc = mkloc $startpos $endpos in
+        let name, args = d in
+        [ Ast_helper.Str.exception_ ~loc
+            (Ast_helper.Te.mk_exception ~loc (Ast_helper.Te.decl ~loc ~args:(Pcstr_tuple args) name)) ] }
   (* `type btree { ... }`, or with parameters before the name like OCaml's
      `'a btree` (without the quote): `type a btree { ... }`. *)
   | TYPE; ids = nonempty_list(IDENT); LBRACE; b = body_type; RBRACE
@@ -916,6 +923,10 @@ expr:
     { mk_fn_expr (mkloc $startpos $endpos) params e }
   | MATCH; e = expr; LBRACE; option(BAR); cases = separated_nonempty_list(BAR, match_case); RBRACE
     { Ast_helper.Exp.match_ ~loc:(mkloc $startpos $endpos) e cases }
+  (* `try { ... } with { | Not_found -> ... | Failure msg -> ... }`: the
+     arms are written like `match`'s, and match exceptions. *)
+  | TRY; e = body; WITH; LBRACE; option(BAR); cases = separated_nonempty_list(BAR, match_case); RBRACE
+    { Ast_helper.Exp.try_ ~loc:(mkloc $startpos $endpos) e cases }
   | e = tuple { e }
 
 (* A tuple needs no parentheses here, as in match arms. *)

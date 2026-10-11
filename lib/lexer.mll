@@ -59,6 +59,9 @@ rule raw_token = parse
   | "let" { LET }
   (* | "in" { IN } *)
   | "match" { MATCH }
+  | "try" { TRY }
+  | "with" { WITH }
+  | "exception" { EXCEPTION }
   | "if" { IF }
   | "then" { THEN }
   | "else" { ELSE }
