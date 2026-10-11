@@ -552,3 +552,39 @@ impl negatable of array {
 impl negatable of list {
     fn neg l { List.map (^x -> neg x) l }
 }
+
+impl indexable of string, range {
+    op [] s r {
+        fn walk low high comp step {
+            let st = range_step low high step;
+            fn go acc i {
+                if range_continues comp i high st
+                then go (acc + String.make 1 s[i]) (i + st)
+                else acc
+            }
+            if st == 0 then "" else go "" low
+        }
+        match r {
+            | Range (low, high, comp) -> walk low high comp (range_default_step low high)
+            | RangeStep (low, high, comp, step) -> walk low high comp step
+        }
+    }
+}
+
+impl indexable of array, range {
+    op [] a r {
+        fn walk low high comp step {
+            let st = range_step low high step;
+            fn go acc i {
+                if range_continues comp i high st
+                then go (Array.get a i :: acc) (i + st)
+                else acc
+            }
+            if st == 0 then [||] else Array.of_list (List.rev (go [] low))
+        }
+        match r {
+            | Range (low, high, comp) -> walk low high comp (range_default_step low high)
+            | RangeStep (low, high, comp, step) -> walk low high comp step
+        }
+    }
+}

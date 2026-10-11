@@ -98,17 +98,6 @@ let split_indices (index : expression) index_start =
   | Pexp_tuple l when index.pexp_loc.loc_start.pos_cnum = index_start.Lexing.pos_cnum -> List.map snd l
   | _ -> [ index ]
 
-(* `t[i] = v` -> `[]=` t i v; with several indices, like reading
-   (`m[i, j]` is `m[i][j]`), all but the last one select the inner value:
-   `m[i, j] = v` -> `[]=` (m[i]) j v. *)
-let mkassign loc arr (index : expression) index_start v =
-  let rec go arr = function
-    | [ last ] -> Ast_helper.Exp.apply ~loc (index_fn loc "[]=" "Array.set") [ (Nolabel, arr); (Nolabel, last); (Nolabel, v) ]
-    | i :: rest -> go (mkget loc arr i) rest
-    | [] -> assert false
-  in
-  go arr (split_indices index index_start)
-
 let mkbool loc b =
   Ast_helper.Exp.construct ~loc
     (Location.mkloc (Longident.Lident (if b then "true" else "false")) loc)
@@ -191,6 +180,40 @@ let rec is_range_expr (e : expression) =
     is_op_named ".." f || is_op_named "..=" f
     || ((is_op_named "+" f || is_op_named "-" f) && is_range_expr lo)
   | _ -> false
+
+(* `m[i, j]` is `m[i][j]`, except after a range written in the brackets:
+   `m[0..n, j]` takes `[j]` of each row of `m[0..n]` (a column), so the
+   indices after it go through `Array.map`. *)
+(* The generated nodes get zero-width locations at the range's bounds: no
+   real expression has one, so they can't collide with the overloads
+   bin/main.ml records by location. *)
+let point (p : Lexing.position) = { Location.loc_start = p; loc_end = p; loc_ghost = true }
+
+let row_var (i : expression) = "__scaml_row", mkident (point i.pexp_loc.loc_end) "__scaml_row"
+
+let rec mkget_indices loc arr = function
+  | [] -> arr
+  | i :: (_ :: _ as rest) when is_range_expr i ->
+    let name, row = row_var i in
+    let f = mkfun loc (Ast_helper.Pat.var ~loc:Location.none (Location.mkloc name Location.none)) (mkget_indices loc row rest) in
+    Ast_helper.Exp.apply ~loc:(point i.pexp_loc.loc_start) (mkqident (point i.pexp_loc.loc_start) "Array.map") [ (Nolabel, f); (Nolabel, mkget loc arr i) ]
+  | i :: rest -> mkget_indices loc (mkget loc arr i) rest
+
+(* `t[i] = v` -> `[]=` t i v; with several indices, like reading
+   (`m[i, j]` is `m[i][j]`), all but the last one select the inner value:
+   `m[i, j] = v` -> `[]=` (m[i]) j v, and `m[0..n, j] = v` sets `[j]` of
+   each of those rows. *)
+let mkassign loc arr (index : expression) index_start v =
+  let rec go arr = function
+    | [ last ] -> Ast_helper.Exp.apply ~loc (index_fn loc "[]=" "Array.set") [ (Nolabel, arr); (Nolabel, last); (Nolabel, v) ]
+    | i :: rest when is_range_expr i ->
+      let name, row = row_var i in
+      let f = mkfun loc (Ast_helper.Pat.var ~loc:Location.none (Location.mkloc name Location.none)) (go row rest) in
+      Ast_helper.Exp.apply ~loc:(point i.pexp_loc.loc_start) (mkqident (point i.pexp_loc.loc_start) "Array.iter") [ (Nolabel, f); (Nolabel, mkget loc arr i) ]
+    | i :: rest -> go (mkget loc arr i) rest
+    | [] -> assert false
+  in
+  go arr (split_indices index index_start)
 
 (* The length of `lo..hi` / `lo..=hi` when both bounds are int literals and
    there's no step, to report a wrong number of names at compile time. *)
@@ -1046,7 +1069,7 @@ tuple:
 indexable:
   | a = indexable; INDEX_LBRACK; index = expr; RBRACK
       { let loc = mkloc $startpos $endpos in
-        List.fold_left (mkget loc) a (split_indices index $startpos(index)) }
+        mkget_indices loc a (split_indices index $startpos(index)) }
   | e = indexable; DOT; f = IDENT
     {
       Ast_helper.Exp.field ~loc:(mkloc $startpos $endpos) e
