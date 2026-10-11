@@ -132,11 +132,11 @@ impl showable of matrix {
 fn trace m {
     let (x, y) = m.shape;
 
-    if x != y
+    if x != y || x == 0
     then
-        failwith "error trace : matrix must be square so shape.x == shape.y"
+        failwith "error trace : matrix must be square and not empty so shape.x == shape.y > 0"
     else
-        fold_left (^acc i -> m[i,i] + acc) 0 (0..x)
+        fold_left (^acc i -> m[i,i] + acc) m[0,0] (1..x)
 }
 
 op *. m1 m2 {
