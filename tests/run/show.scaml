@@ -1,0 +1,19 @@
+// one println for every type
+fn main {
+    println 42;
+    println 3.5;
+    println "text";
+    println 'c';
+    println true;
+    println ();
+    println [1; 2; 3];
+    println [|1.; 2.|];
+    println (Some 4);
+    println (if false then Some 1 else None);
+    println (1, "a");
+    println (1, 2., "b");
+    println [[1; 2]; [3]];
+    println (to_string 12 + "!");
+    println (to_int 3.9);
+    println (to_float 2);
+}

@@ -1,0 +1,12 @@
+#use "stdlib/complex.scaml"
+
+fn main {
+    let z = complex 3. 4.;
+    println z;
+    println (modulus z);
+    println (conj z);
+    println (z * z);
+    println (z + 1);
+    println (z / complex 0. 1.);
+    println (csqrt (complex (-4.) 0.));
+}

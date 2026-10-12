@@ -57,6 +57,17 @@ Use `--keep` (`-k`) to keep the generated OCaml source and intermediate files.
 Only the parts of the stdlib the program uses are type-checked; use
 `--check-stdlib` to type-check all of it (e.g. after editing the stdlib).
 
+## Tests
+
+```bash
+dune test
+```
+
+compiles and runs every program in [`tests/run/`](tests/run/), compiles
+every program in [`tests/errors/`](tests/errors/) (each must fail), and
+compares the result with [`tests/tests.expected`](tests/tests.expected).
+When a change of output is intended, accept it with `dune promote`.
+
 ## Editor support
 
 A VS Code extension (syntax highlighting, file icon) is available in

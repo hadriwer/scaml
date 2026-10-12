@@ -1,0 +1,18 @@
+; `dune test` compiles and runs every program in run/ and errors/, and
+; compares the result with tests.expected. After a change in the
+; output that is intended: `dune promote`.
+
+(rule
+ (deps
+  run.sh
+  (glob_files run/*.scaml)
+  (glob_files errors/*.scaml))
+ (action
+  (with-stdout-to
+   tests.output
+   (run bash %{dep:run.sh} %{exe:../bin/main.exe}))))
+
+(rule
+ (alias runtest)
+ (action
+  (diff tests.expected tests.output)))

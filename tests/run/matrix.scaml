@@ -1,0 +1,14 @@
+#use "stdlib/matrix.scaml"
+
+fn main {
+    let m = init_matrix 3 3 (^i j -> i * 3 + j);
+    println m;
+    println (transpose m);
+    println (trace m);
+    println (m *. identity 3);
+    println (m + m);
+    println (m * 2);
+    println m[1, 2];
+    print_shape (init_matrix 2 4 (^i j -> 0));
+    println (map (^x -> x * x) m);
+}

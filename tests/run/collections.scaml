@@ -1,0 +1,24 @@
+// iterable, foldable, mappable, quantifiable, sizable, concatenable
+fn total acc c { fold_left (+) acc c }
+
+fn main {
+    let l = [1; 2; 3; 4];
+    let a = [|1.; 2.; 3.|];
+    println (total 0 l);
+    println (total 0. a);
+    println (sum 0 l);
+    println (map (^x -> x * x) l);
+    println (mapi (^i x -> i + x) a);
+    println (map2 (+) [1; 2] [10; 20]);
+    println (fold_right (^x acc -> x :: acc) l []);
+    println (forall (^x -> x > 0) l);
+    println (exists (^x -> x > 3.) a);
+    println (len l);
+    println (len a);
+    println (l @ [5]);
+    println ([|1|] @ [|2; 3|]);
+    iter (^x -> print x) l;
+    println "";
+    iteri (^i x -> print (i + x)) a;
+    println "";
+}

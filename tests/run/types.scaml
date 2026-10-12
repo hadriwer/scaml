@@ -1,0 +1,43 @@
+// records, variants, pattern matching, user traits and impls
+type point { x of int ; y of int }
+
+type shape {
+    | Circle of float
+    | Rect of float, float
+}
+
+type a node { One of a | Many of a node list }
+
+fn area s {
+    match s {
+        | Circle r -> 3. * r * r
+        | Rect (w, h) -> w * h
+    }
+}
+
+fn flatten l {
+    match l {
+        | [] -> []
+        | (One x) :: xs -> x :: flatten xs
+        | (Many r) :: xs -> flatten r @ flatten xs
+    }
+}
+
+trait named {
+    type a
+    fn name of a -> string
+}
+
+impl named of int { fn name i { "int " + to_string i } }
+impl named of point { fn name p { "point " + to_string p.x + "," + to_string p.y } }
+
+fn main {
+    let p = { x = 1; y = 2 };
+    println (p.x + p.y);
+    println (area (Circle 1.));
+    println (area (Rect (2., 3.)));
+    println (flatten [One 1; Many [One 2; Many [One 3]]; One 4]);
+    println (name 5);
+    println (name p);
+    match (1, "b") { | (1, s) -> println s | _ -> println "other" }
+}

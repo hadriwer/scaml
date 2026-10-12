@@ -1,0 +1,21 @@
+// functions, recursion, local functions, anonymous functions, if
+fn fact n { if n <= 1 then 1 else n * fact (n - 1) }
+
+fn fib n {
+    fn go a b k { if k == 0 then a else go b (a + b) (k - 1) }
+    go 0 1 n
+}
+
+op <+> a b { a * 10 + b }
+
+fn main {
+    println (fact 10);
+    println (fib 30);
+    println (1 <+> 2);
+    let double = ^x -> x * 2;
+    println (double 21);
+    println (1 + 2 * 3);
+    println (7 / 2);
+    println (7 % 2);
+    println (if 3 > 2 && not (1 == 2) then "yes" else "no");
+}
