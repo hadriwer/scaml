@@ -507,6 +507,92 @@ let collect_overloads (structure : Parsetree.structure) : (string, string list *
     structure;
   table
 
+(* Before any probe: drops the library items (anything not written in the
+   user's own file) that nothing the program can reach depends on, so the
+   probe rounds only ever type what's really used. Same walk as [reachable],
+   plus what a trait call reaches without naming it: a used trait method
+   keeps its trait, and that trait's impls / overloads -- but only those for
+   types that are themselves reached (a `showable of matrix` is useless
+   while nothing builds a matrix). *)
+let prune_for_probe (user_file : string) (structure : Parsetree.structure) : Parsetree.structure =
+  let methods = collect_trait_methods structure in
+  let trait_of_method = Hashtbl.create 64 in
+  List.iter (fun (m, t, _, _) -> Hashtbl.replace trait_of_method m t) methods;
+  let traits = Hashtbl.create 16 in
+  List.iter (fun (_, t, _, _) -> Hashtbl.replace traits t ()) methods;
+  let declared_types = Hashtbl.create 16 in
+  List.iter
+    (fun (item : Parsetree.structure_item) ->
+      match item.pstr_desc with
+      | Pstr_type (_, decls) -> List.iter (fun (d : Parsetree.type_declaration) -> Hashtbl.replace declared_types d.ptype_name.txt ()) decls
+      | _ -> ())
+    structure;
+  let overloads = collect_overloads structure in
+  let rec split_on s =
+    match String.index_opt s '_' with
+    | Some j when j + 1 < String.length s && s.[j + 1] = '_' ->
+      String.sub s 0 j :: split_on (String.sub s (j + 2) (String.length s - j - 2))
+    | _ -> [ s ]
+  in
+  (* What would make an item worth keeping without anything naming it:
+     `Some (trigger, types)` for an impl module (its trait) or an overload
+     (its method). *)
+  let trigger_of (item : Parsetree.structure_item) =
+    match item.pstr_desc with
+    | Pstr_module { pmb_name = { txt = Some name; _ }; _ } ->
+      (match split_on (String.uncapitalize_ascii name) with
+       | t :: tys when tys <> [] && Hashtbl.mem traits t -> Some (t, tys)
+       | _ -> None)
+    | Pstr_value (_, [ { pvb_pat = { ppat_desc = Ppat_var { txt; _ }; _ }; _ } ]) ->
+      Hashtbl.fold (fun m (tys, fname) acc -> if fname = txt then Some (m, tys) else acc) overloads None
+    | _ -> None
+  in
+  let prunable (item : Parsetree.structure_item) =
+    item.pstr_loc.loc_start.pos_fname <> user_file
+    && (match item.pstr_desc with Pstr_value _ | Pstr_module _ | Pstr_modtype _ | Pstr_type _ -> true | _ -> false)
+  in
+  let items = Array.of_list structure in
+  let refs = Array.map referenced items in
+  let triggers = Array.map trigger_of items in
+  let provider_of_name = Hashtbl.create 256 in
+  Array.iteri (fun i item -> List.iter (fun n -> Hashtbl.add provider_of_name n i) (provided_names item)) items;
+  let kept = Array.make (Array.length items) false in
+  let used = Hashtbl.create 32 (* trait and method names *) in
+  let reached_types = Hashtbl.create 16 in
+  let rec visit i =
+    if not kept.(i) then begin
+      kept.(i) <- true;
+      (match items.(i).pstr_desc with
+       | Pstr_type (_, decls) -> List.iter (fun (d : Parsetree.type_declaration) -> Hashtbl.replace reached_types d.ptype_name.txt ()) decls
+       | _ -> ());
+      List.iter
+        (fun (n, _) ->
+          List.iter visit (Hashtbl.find_all provider_of_name n);
+          (match Hashtbl.find_opt trait_of_method n with
+           | Some t -> Hashtbl.replace used n (); Hashtbl.replace used t (); List.iter visit (Hashtbl.find_all provider_of_name t)
+           | None -> ());
+          if Hashtbl.mem traits n then Hashtbl.replace used n ())
+        refs.(i)
+    end
+  in
+  Array.iteri (fun i item -> if not (prunable item) then visit i) items;
+  (* Using a trait or a type can unlock impls, whose bodies can use more:
+     until nothing changes. *)
+  let rec fixpoint () =
+    let changed = ref false in
+    Array.iteri
+      (fun i trig ->
+        match trig with
+        | Some (t, tys) when (not kept.(i)) && Hashtbl.mem used t
+                             && List.for_all (fun ty -> not (Hashtbl.mem declared_types ty) || Hashtbl.mem reached_types ty) tys ->
+          visit i; changed := true
+        | _ -> ())
+      triggers;
+    if !changed then fixpoint ()
+  in
+  fixpoint ();
+  List.filteri (fun i _ -> kept.(i)) structure
+
 (* True exactly when [path] is a direct projection of the impl functor
    parameter every `impl` in lib/parser.mly names "X" (e.g. `X.__elem0__`,
    `X.a`) -- i.e. [ty] is still abstract because we're looking at it from
@@ -2421,6 +2507,9 @@ let () =
   (* Keep every intermediate file next to the source (.generated.ml, .cmi,
      .cmx, .o); by default only the executable is produced there. *)
   let keep = List.mem "--keep" args || List.mem "-k" args in
+  (* Type the whole stdlib, not just what the program uses (see
+     [prune_for_probe]): catches errors in its unused parts. *)
+  let check_stdlib = List.mem "--check-stdlib" args in
   let positional = List.filter (fun a -> String.length a = 0 || a.[0] <> '-') args in
   match tokens_mode, positional with
   | true, [ filename ] ->
@@ -2442,6 +2531,10 @@ let () =
     let user_file_structure = timed "parse user file" (fun () -> parse_scaml_file filename) in
     let stdlib_structure, user_file_structure = warn_stdlib_overrides stdlib_structure user_file_structure in
     let user_structure = stdlib_structure @ user_file_structure in
+    let user_structure =
+      if check_stdlib then user_structure
+      else timed "prune for probe" (fun () -> prune_for_probe filename user_structure)
+    in
 
     if not (has_main user_structure) then begin
       Printf.eprintf "%s: missing entry point (expected `fn main() { ... }`)\n" filename;
@@ -2530,9 +2623,9 @@ let () =
           exit 1));
     if verbose then print_endline "Typecheck OK";
 
-    (* Only after the full structure (stdlib included) has been type-checked
-       as a whole -- trimming first could silently hide a real error in
-       something unused. Pruning here only ever drops siblings nothing kept
+    (* Only after the structure has been type-checked as a whole: the user's
+       own file always in full, the stdlib only in what [prune_for_probe]
+       kept (all of it with --check-stdlib). Pruning here only ever drops siblings nothing kept
        depends on, so it can't change whether what remains still type-checks. *)
     let full_structure = timed "dead code" (fun () -> eliminate_dead_code full_structure) in
 

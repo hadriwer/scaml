@@ -54,6 +54,8 @@ development you can also skip the install with
 `dune exec scamlc -- examples/hello.scaml`.
 
 Use `--keep` (`-k`) to keep the generated OCaml source and intermediate files.
+Only the parts of the stdlib the program uses are type-checked; use
+`--check-stdlib` to type-check all of it (e.g. after editing the stdlib).
 
 ## Editor support
 
