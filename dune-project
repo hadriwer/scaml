@@ -4,10 +4,12 @@
 
 (name SCaml)
 
+(version 0.1.0)
+
 (generate_opam_files true)
 
 (source
- (github username/reponame))
+ (github hadriwer/scaml))
 
 (authors "wer")
 
@@ -15,14 +17,19 @@
 
 (license MIT)
 
-(documentation https://url/to/documentation)
+(documentation https://github.com/hadriwer/scaml/tree/main/docs)
 
 (package
  (name SCaml)
- (synopsis "A short synopsis")
- (description "A longer description")
- (depends ocaml)
+ (synopsis "A functional language with a Rust-inspired syntax that compiles to OCaml")
+ (description
+  "SCaml (Simple Caml) is a functional language with a lightweight, Rust-inspired syntax. Its operators and functions are trait methods, resolved at compile time (modular implicits). SCaml is parsed into OCaml's own AST, type-checked and compiled to a native binary with the OCaml toolchain.")
+ (depends
+  (ocaml
+   (>= 5.5))
+  (menhir :build)
+  ocamlfind)
  (tags
-  ("add topics" "to describe" your project)))
+  (language compiler traits "modular implicits")))
 
 ; See the complete stanza docs at https://dune.readthedocs.io/en/stable/reference/dune-project/index.html
