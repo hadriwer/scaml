@@ -1859,6 +1859,15 @@ let binds_new_values env (sg : Types.signature) =
       values
   | None -> false
 
+(* Set by the rounds for the length of one probe: dispatches what an item's
+   typing just resolved, and gives the rewritten item back if that changed
+   it (see [type_refined] in [probe_typecheck]). *)
+let probe_refine : (Parsetree.structure_item -> Typedtree.structure_item list -> Parsetree.structure_item option) option ref =
+  ref None
+
+(* The user structure as the last probe typed it, refined items included. *)
+let probe_refined : Parsetree.structure ref = ref []
+
 let probe_typecheck env (methods : (string * string * string list * (string * int) option list) list) (user_structure : Parsetree.structure) : Typedtree.structure =
   let probe_structure = build_probe_prelude methods @ user_structure @ [ entry_point ] in
   let fail exn =
@@ -1881,6 +1890,26 @@ let probe_typecheck env (methods : (string * string * string list * (string * in
       | (t, sg, _, _, env') -> (t.Typedtree.str_items, sg, env')
       | exception exn -> fail exn
     in
+    (* Typed, then dispatched and typed again for as long as that changes it:
+       a chain of trait calls (`a + b + c`, each one's type known only once
+       the one inside is dispatched) resolves here instead of over as many
+       rounds. A retyping that fails keeps the last version, the rounds go on
+       from it. *)
+    let type_refined env item =
+      let rec loop item ti sg env' fuel =
+        match !probe_refine with
+        | Some refine when fuel > 0 ->
+          (match refine item ti with
+           | Some item' ->
+             (match Typemod.type_structure env [ item' ] with
+              | (t, sg', _, _, env'') -> loop item' t.Typedtree.str_items sg' env'' (fuel - 1)
+              | exception _ -> (item, ti, sg, env'))
+           | None -> (item, ti, sg, env'))
+        | _ -> (item, ti, sg, env')
+      in
+      let ti, sg, env' = type_item env item in
+      loop item ti sg env' 64
+    in
     (* [exact]: [env] is the very environment the cached items were typed
        in, so a reused item's own environment after it is right too; once
        an item was inserted, it's only equivalent, and the reused item's
@@ -1888,17 +1917,40 @@ let probe_typecheck env (methods : (string * string * string list * (string * in
     (* For each name, the last item that mentions it: an item removed can
        be skipped over if no item from there on mentions what it bound. *)
     let last_mention = Hashtbl.create 256 in
+    (* Per item, every name it mentions: a value, or a module through a
+       qualified name. *)
+    let mentions = Array.make (List.length probe_structure) [] in
     List.iteri
       (fun i item ->
+        let add name =
+          Hashtbl.replace last_mention name i;
+          mentions.(i) <- name :: mentions.(i)
+        in
+        let add_head lid = match Longident.flatten lid with head :: _ -> add head | [] -> () in
         let expr (it : Ast_iterator.iterator) (e : Parsetree.expression) =
           (match e.pexp_desc with
-           | Pexp_ident { txt = Longident.Lident name; _ } -> Hashtbl.replace last_mention name i
+           | Pexp_ident { txt = Longident.Lident name; _ } -> add name
+           | Pexp_ident { txt = Longident.Ldot (m, _); _ } -> add_head m.txt
            | _ -> ());
           Ast_iterator.default_iterator.expr it e
         in
-        let it = { Ast_iterator.default_iterator with expr } in
+        let module_expr (it : Ast_iterator.iterator) (me : Parsetree.module_expr) =
+          (match me.pmod_desc with Pmod_ident { txt; _ } -> add_head txt | _ -> ());
+          Ast_iterator.default_iterator.module_expr it me
+        in
+        let it = { Ast_iterator.default_iterator with expr; module_expr } in
         it.structure_item it item)
       probe_structure;
+    (* The names whose signature changed during this pass: an item that
+       mentions one is typed again, even if it didn't change itself. *)
+    let dirty = Hashtbl.create 16 in
+    let mentions_dirty i = Hashtbl.length dirty > 0 && List.exists (Hashtbl.mem dirty) mentions.(i) in
+    let names_of (sg : Types.signature) = List.map (fun it -> Ident.name (Types.signature_item_id it)) sg in
+    (* [sg] declares the same names as [old_sg]: the same item, changed. *)
+    let replaces (sg : Types.signature) (old_sg : Types.signature) =
+      let names = names_of sg in
+      names <> [] && List.sort compare names = List.sort compare (names_of old_sg)
+    in
     let removable i (sg : Types.signature) =
       match sig_values sg with
       | Some values ->
@@ -1916,7 +1968,7 @@ let probe_typecheck env (methods : (string * string * string list * (string * in
       | [] -> (acc, env)
       | item :: items' ->
         (match cached with
-         | (item', ti, sg, env') :: cached' when same item' item ->
+         | (item', ti, sg, env') :: cached' when same item' item && not (mentions_dirty i) ->
            let env_next = if exact then env' else Env.add_signature sg env in
            go cached' items' (i + 1) env_next exact ((item, ti, sg, env_next) :: acc)
          (* the cached item was removed (e.g. by [drop_unused_generics]),
@@ -1924,21 +1976,30 @@ let probe_typecheck env (methods : (string * string * string list * (string * in
          | (_, _, old_sg, _) :: cached' when removable i old_sg && reappears item cached' 64 ->
            go cached' items i env false acc
          | (_, _, old_sg, old_env') :: cached' ->
-           let ti, sg, env' = type_item env item in
+           let item, ti, sg, env' = type_refined env item in
            (match same_signature sg old_sg with
             | Some pairs ->
               let env_next = if exact then old_env' else Env.add_signature old_sg env in
               go cached' items' (i + 1) env_next exact ((item, rename_idents pairs ti, old_sg, env_next) :: acc)
+            | None when replaces sg old_sg ->
+              (* e.g. a clone whose parameters got more precise: only what
+                 mentions it needs typing again *)
+              List.iter (fun n -> Hashtbl.replace dirty n ()) (names_of sg);
+              go cached' items' (i + 1) env' false ((item, ti, sg, env') :: acc)
             | None ->
               if binds_new_values env sg then go cached items' (i + 1) env' false ((item, ti, sg, env') :: acc)
               else go [] items' (i + 1) env' false ((item, ti, sg, env') :: acc))
          | [] ->
-           let ti, sg, env' = type_item env item in
+           let item, ti, sg, env' = type_refined env item in
            go [] items' (i + 1) env' false ((item, ti, sg, env') :: acc))
     in
     let typed, final_env = go cached probe_structure 0 env true [] in
     let entries = List.rev typed in
     probe_cache := Some (env, entries);
+    (* without the prelude and the entry point *)
+    let first = List.length probe_structure - List.length user_structure - 1 in
+    probe_refined :=
+      List.filteri (fun i _ -> i >= first && i < List.length entries - 1) (List.map (fun (item, _, _, _) -> item) entries);
     { Typedtree.str_items = List.concat_map (fun (_, ti, _, _) -> ti) entries;
       str_type = List.concat_map (fun (_, _, sg, _) -> sg) entries;
       str_final_env = final_env }
@@ -2568,8 +2629,28 @@ let () =
         (* The latest requirements, so a later pass over the result can go
            on from them instead of starting from scratch. *)
         let last_dict_requirements = ref (Hashtbl.create 16) in
+        (* What a probe dispatches right away, item by item (see
+           [probe_refine]): only plain renames to an impl or an overload.
+           The others (a functor applied, a dictionary...) depend on what
+           the whole round finds ([dict_requirements]), so they wait for it. *)
+        let refine dict_requirements (item : Parsetree.structure_item) ti =
+          match item.pstr_desc with
+          | Pstr_value _ | Pstr_module _ ->
+            let typed = { Typedtree.str_items = ti; str_type = []; str_final_env = env } in
+            let table, _ = harvest_dispatch trait_methods abstract_types ctor_methods overloads dict_requirements typed in
+            let plain = Hashtbl.fold (fun _ t ok -> ok && (match t with Plain _ | Overload _ -> true | _ -> false)) table true in
+            if Hashtbl.length table = 0 || not plain then None
+            else (match rewrite_dispatch table [ item ] with [ item' ] when item' <> item -> Some item' | _ -> None)
+          | _ -> None
+        in
         let rec rounds n dict_requirements structure =
-          let typed_probe = timed "probe typecheck" (fun () -> probe_typecheck env trait_methods structure) in
+          let local = not !default_free_type_vars in
+          if local then probe_refine := Some (refine dict_requirements);
+          let typed_probe =
+            Fun.protect ~finally:(fun () -> probe_refine := None)
+              (fun () -> timed "probe typecheck" (fun () -> probe_typecheck env trait_methods structure))
+          in
+          let structure = if local then !probe_refined else structure in
           if !default_free_type_vars then protect_bound_vars typed_probe;
           let dispatch_table, dict_requirements =
             timed "harvest dispatch" (fun () -> harvest_dispatch trait_methods abstract_types ctor_methods overloads dict_requirements typed_probe)
