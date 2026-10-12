@@ -588,3 +588,31 @@ impl indexable of array, range {
         }
     }
 }
+
+trait extremable {
+    type i a b
+    fn max of b -> a
+    fn min of b -> a
+    fn argmax of b -> i
+    fn argmin of b -> i
+}
+
+impl extremable of array {
+    type i = int
+    fn max a {
+        try Array.fold_left (^acc e -> if e > acc then e else acc) a[0] a
+        with { | Invalid_argument _ -> failwith "error max : empty array can not have a maximum value." }
+    }
+    fn min a {
+        try Array.fold_left (^acc e -> if e < acc then e else acc) a[0] a
+        with { | Invalid_argument _ -> failwith "error min : empty array can not have a minimum value." }
+    }
+    fn argmax a {
+        try fst (fold_left (^acc i -> if a[i] > snd acc then (i, a[i]) else acc) (0, a[0]) (0..len a))
+        with { | Invalid_argument _ -> failwith "error argmax : empty array can not have a argmax." }
+    }
+    fn argmin a {
+        try fst (fold_left (^acc i -> if a[i] < snd acc then (i, a[i]) else acc) (0, a[0]) (0..len a))
+        with { | Invalid_argument _ -> failwith "error argmin : empty array can not have a argmin." }
+    }
+}

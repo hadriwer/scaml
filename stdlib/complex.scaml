@@ -165,7 +165,7 @@ fn eig_complex m {
             else {
                 let scale = modulus t[p-1,p-1] + modulus t[p-2,p-2];
                 let scale = if scale == 0. then 1. else scale;
-                let off = fold_left (^acc j -> max acc (modulus t[p-1,j])) 0. (0..(p - 1));
+                let off = fold_left (^acc j -> Stdlib.max acc (modulus t[p-1,j])) 0. (0..(p - 1));
                 if off <= tol * scale then {
                     iter (^j -> t[p-1,j] = zero) (0..(p - 1));
                     reduce (p - 1) it 0

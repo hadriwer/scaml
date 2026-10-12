@@ -103,7 +103,7 @@ impl showable of matrix {
         let (_, cols) = m.shape;
         // one width per column, so a wide cell doesn't stretch the others
         let widths = Array.make cols 0;
-        iter (^row -> iteri (^j s -> widths[j] = max widths[j] (String.length s)) row) strs;
+        iter (^row -> iteri (^j s -> widths[j] = Stdlib.max widths[j] (String.length s)) row) strs;
 
         // numbers are right-aligned, anything else (None, Some x, ...) left-aligned
         fn is_number s {
@@ -201,7 +201,7 @@ fn eig m {
 
         // biggest coefficient under the diagonal: 0 once a is triangular
         fn lower_off a {
-            fold_left (^acc i -> fold_left (^acc j -> max acc (abs_float a[i,j])) acc (0..i)) 0. (0..n)
+            fold_left (^acc i -> fold_left (^acc j -> Stdlib.max acc (abs_float a[i,j])) acc (0..i)) 0. (0..n)
         }
 
         // a_{k+1} = r q = q^T a_k q, so a_0 = qs a_k qs^T
@@ -240,5 +240,41 @@ fn eig m {
         let vs = Array.init n eigenvector;
 
         (w, init_matrix n n (^i k -> vs[k][i]))
+    }
+}
+
+impl extremable of matrix {
+    type i = (int, int)
+    fn max m {
+        try fold_left (^acc row -> { let mr = max row; if mr > acc then mr else acc }) m[0,0] m.arr
+        with {
+            | Invalid_argument _ -> failwith "error max : empty matrix can not have a maximum value."
+        }
+    }
+    fn min m {
+        try fold_left (^acc row -> { let mr = min row; if mr < acc then mr else acc }) m[0,0] m.arr
+        with {
+            | Invalid_argument _ -> failwith "error min : empty matrix can not have a minimum value."
+        }
+    }
+    fn argmax m {
+        let (rows, cols) = m.shape;
+        try fst (fold_left (^acc k -> {
+            let e = m[k / cols, k % cols];
+            if e > snd acc then ((k / cols, k % cols), e) else acc
+        }) ((0, 0), m[0,0]) (0..(rows * cols)))
+        with { 
+            | Invalid_argument _ -> failwith "error argmax : empty matrix can not have a argmax." 
+        }
+    }
+    fn argmin m {
+        let (rows, cols) = m.shape;
+        try fst (fold_left (^acc k -> {
+            let e = m[k / cols, k % cols];
+            if e < snd acc then ((k / cols, k % cols), e) else acc
+        }) ((0, 0), m[0,0]) (0..(rows * cols)))
+        with { 
+            | Invalid_argument _ -> failwith "error argmin : empty matrix can not have a argmin." 
+        }
     }
 }
