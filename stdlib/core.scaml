@@ -531,6 +531,10 @@ impl sizable of list {
     fn len { List.length }
 }
 
+impl sizable of string {
+    fn len { String.length }
+}
+
 // `-x` (prefix minus) on anything but a literal number is `neg x`.
 trait negatable {
     type a
@@ -589,6 +593,9 @@ impl indexable of array, range {
     }
 }
 
+fn maxn a b { if a > b then a else b }
+fn minn a b { if a < b then a else b }
+
 trait extremable {
     type i a b
     fn max of b -> a
@@ -621,4 +628,40 @@ impl conversionnable of string {
   fn to_int { scaml_int_of_string }
   fn to_float { scaml_float_of_string }
   fn to_string s { s }
+}
+
+impl conversionnable of bool {
+  fn to_int b { if b then 1 else 0 }
+  fn to_float b { if b then 1. else 0. }
+  fn to_string b { if b then "true" else "false" }
+}
+
+trait filterable {
+  type a
+  type t of 1
+  fn filter of (a -> bool) -> a t -> a t
+}
+
+impl filterable of array {
+  fn filter p arr { Array.of_list (List.filter p (Array.to_list arr)) }
+}
+
+impl filterable of list {
+  fn filter { List.filter }
+}
+
+fn compare e1 e2 { scaml_compare e1 e2 }
+
+trait sortable {
+  type a
+  type t of 1
+  fn sort of (a -> a -> int) -> a t -> a t
+}
+
+impl sortable of array {
+  fn sort cmp arr { let c = Array.copy arr; Array.sort cmp c; c }
+}
+
+impl sortable of list {
+  fn sort { List.sort }
 }

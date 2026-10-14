@@ -278,3 +278,7 @@ impl extremable of matrix {
         }
     }
 }
+
+impl sortable of matrix {
+  fn sort cmp m { { arr = map (sort cmp) m.arr; shape = m.shape } }
+}

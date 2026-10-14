@@ -30,7 +30,7 @@ let scaml_print_float = print_float
 let scaml_print_char = print_char
 
 (* Comparable *)
-
+let scaml_compare = compare
 let scaml_lt = (<)
 let scaml_leq = (<=)
 let scaml_gt = (>)
