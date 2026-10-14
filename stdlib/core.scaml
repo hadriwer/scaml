@@ -616,3 +616,9 @@ impl extremable of array {
         with { | Invalid_argument _ -> failwith "error argmin : empty array can not have a argmin." }
     }
 }
+
+impl conversionnable of string {
+  fn to_int { scaml_int_of_string }
+  fn to_float { scaml_float_of_string }
+  fn to_string s { s }
+}

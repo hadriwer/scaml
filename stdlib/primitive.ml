@@ -4,6 +4,8 @@ let scaml_list_concat = (@)
 (* CONVERSION *)
 let scaml_int_of_float = int_of_float
 let scaml_float_of_int = float_of_int
+let scaml_int_of_string = int_of_string
+let scaml_float_of_string = float_of_string
 (* ARITHM *)
 let scaml_neg_int = ( ~- )
 let scaml_neg_float = ( ~-. )
