@@ -3,6 +3,18 @@
 SCaml follows [semantic versioning](https://semver.org/). Until 1.0, the
 syntax and the standard library may still change between minor versions.
 
+## Unreleased
+
+### Standard library
+
+- `filterable` trait (`filter`) for `array` and `list`.
+- `conversionnable` impls for `string` and `bool`.
+- `sizable` impl for `string` (`len "abc"`).
+- `maxn` and `minn`: maximum and minimum of two values.
+- `compare` and `sortable` trait (`sort`) for `array`, `list` and `matrix`
+  (each row sorted); `sort` returns a sorted collection and leaves arrays
+  unchanged (use `Array.sort` to sort in place).
+
 ## 0.1.0 (2026-10-12)
 
 First tagged version.
