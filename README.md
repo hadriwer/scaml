@@ -20,6 +20,16 @@ fn main {
 SCaml is parsed directly into OCaml's own AST, then type-checked and compiled
 with the OCaml toolchain: `SCaml → OCaml → native binary`.
 
+## Versions
+
+`main` is the development branch: it may contain changes not yet released,
+listed under *Unreleased* in the [changelog](CHANGELOG.md). For the latest
+stable version, check out its tag before installing:
+
+```bash
+git checkout v0.1.0
+```
+
 ## Requirements
 
 - OCaml 5.5
