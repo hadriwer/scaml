@@ -5,6 +5,14 @@ syntax and the standard library may still change between minor versions.
 
 ## Unreleased
 
+### Language
+
+- Optional arguments, as in OCaml, for `fn` (top-level and local): with a
+  default value, `fn foo ?(x=0) y { .. }`, or as an option, `fn foo ?x y
+  { .. }`. Passed by name, anywhere among the other arguments (`foo x=1 2`,
+  `foo 2 x=1`), or left out (`foo 2`); `?x=` passes the option itself
+  (`foo ?x=None 2`).
+
 ### Standard library
 
 - `filterable` trait (`filter`) for `array` and `list`.
@@ -14,6 +22,13 @@ syntax and the standard library may still change between minor versions.
 - `compare` and `sortable` trait (`sort`) for `array`, `list` and `matrix`
   (each row sorted); `sort` returns a sorted collection and leaves arrays
   unchanged (use `Array.sort` to sort in place).
+
+### Fixed
+
+- A trait method called on a value whose type nothing fixes, in code that
+  can never run, no longer fails with "No impl of ...": e.g. `x + v` in
+  `match u { Some x -> x + v | None -> .. }` when `u` is an optional
+  argument left out (or `None`).
 
 ## 0.1.0 (2026-10-12)
 

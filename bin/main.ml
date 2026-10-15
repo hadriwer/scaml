@@ -391,6 +391,31 @@ let with_tuple_impls (stdlib : Parsetree.structure) : Parsetree.structure =
    something unresolved, and kept only if the result type-checks. *)
 let default_free_type_vars = ref false
 
+(* Set, on top of [default_free_type_vars], only for a last retry when the
+   `unit` reading still fails: a clone's free type variable is then read as
+   an empty type, [never_type_name], instead (see [core_of_type]). No value of it can
+   exist, so a trait call on one is dead code: `x + v` in the `Some x` arm
+   of `fn foo ?u v`, called as `foo 2` (`u` is always `None` there), which
+   has no impl for `unit, int`. Such a call becomes `assert false` (see
+   [Absurd]) instead of an error. *)
+let absurd_free_type_vars = ref false
+
+(* The empty type, declared in front of the program for that retry only.
+   (Not OCaml's `[ ]`: two of those never unify.) *)
+let never_type_name = "scaml_never"
+
+let never_type_decl =
+  Ast_helper.Str.type_ ~loc Recursive [ Ast_helper.Type.mk ~loc ~kind:(Ptype_variant []) (Location.mkloc never_type_name loc) ]
+
+let is_empty_type (env : Env.t) (ty : Types.type_expr) =
+  match Types.get_desc (Ctype.expand_head env ty) with
+  | Tconstr (Pident id, [], _) -> Ident.name id = never_type_name
+  | _ -> false
+
+(* The last-resort pass failed on a trait call with no impl: the report,
+   kept for when the [absurd_free_type_vars] retry fails too. *)
+exception Overload_miss of Location.error
+
 (* The type variables appearing in the type of some `let`/`fn` binding of
    the current probe (e.g. the parameter type of a generic `length`):
    those are genuinely polymorphic and must stay so, to be cloned per use.
@@ -713,6 +738,11 @@ type dispatch_target =
   (* A whole dictionary built at the call site, e.g. `Showable__tuple2
      (Showable__string) (Showable__int)` for `println ("a", 1)`. *)
   | DictCall of dict_module
+  (* A call that can never run, on a value of the empty type (see
+     [absurd_free_type_vars]), to that many arguments: `fun _ _ -> assert
+     false` (taking them, rather than a bare `assert false`, so OCaml doesn't
+     warn that they're unused). *)
+  | Absurd of int
 
 (* Identifies a source span well enough to match the same node between the
    probe's Typedtree and the original Parsetree (both come from the exact
@@ -1056,6 +1086,10 @@ let harvest_dispatch
         | Texp_ident (_, lid, _) ->
           let name = Longident.last lid.txt in
           (match Hashtbl.find_opt trait_of_name name, Hashtbl.find_opt arity_of_name name with
+           | Some _, Some _
+             when !absurd_free_type_vars
+                  && List.exists (fun (a : Typedtree.expression) -> is_empty_type a.exp_env a.exp_type) all_args ->
+             Hashtbl.replace table (loc_key head.exp_loc) (Absurd (List.length all_args))
            | Some _, Some _ when Hashtbl.mem overloads name ->
              let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) all_args in
              (match resolve_overload head.exp_loc name arg_tys with
@@ -1375,9 +1409,12 @@ let harvest_dispatch
         part for some types (e.g. `indexable`'s `[]` but not `[]=` for a
         read-only `string`). *)
      let shown = match SCaml.Op_names.prettify name with p when p = name -> "`" ^ name ^ "`" | p -> p in
-     Location.print_report Format.err_formatter
-       (Location.error ~loc
-          (Printf.sprintf "No impl of %s (trait `%s`) for %s" shown trait_name (String.concat ", " tys)));
+     let report =
+       Location.error ~loc (Printf.sprintf "No impl of %s (trait `%s`) for %s" shown trait_name (String.concat ", " tys))
+     in
+     (* The last-resort pass may still get past it (see the pipeline). *)
+     if !default_free_type_vars then raise (Overload_miss report);
+     Location.print_report Format.err_formatter report;
      exit 1
    | [] -> ());
   (table, dict_requirements)
@@ -1413,6 +1450,12 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
          let qualified = Option.get (Longident.unflatten [ "X"; method_name ]) in
          { e with pexp_desc = Pexp_ident (Location.mkloc qualified e.pexp_loc) }
        | Some (Overload fname) -> { e with pexp_desc = Pexp_ident (Location.mkloc (Longident.Lident fname) e.pexp_loc) }
+       | Some (Absurd n) ->
+         let loc = e.pexp_loc in
+         let body = Ast_helper.Exp.assert_ ~loc (Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident "false") loc) None) in
+         Ast_helper.Exp.function_ ~loc
+           (List.init n (fun _ -> { Parsetree.pparam_loc = loc; pparam_desc = Pparam_val (Nolabel, None, Ast_helper.Pat.any ~loc ()) }))
+           None (Pfunction_body body)
        | Some (DictCall dict) ->
          let loc = e.pexp_loc in
          let fresh = fresh_dispatch_module_name () in
@@ -2101,7 +2144,8 @@ let rec core_of_type (env : Env.t) (ty : Types.type_expr) : Parsetree.core_type 
   (* Same last-resort reading as [classify_texpr]'s: lets e.g. `length []`
      get a clone for `unit list`. *)
   | Tvar _ when defaultable (Ctype.expand_head env ty) ->
-    Some (Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident "unit") loc) [])
+    if !absurd_free_type_vars then Some (Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident never_type_name) loc) [])
+    else Some (Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident "unit") loc) [])
   | _ -> None
 
 (* [e] with its first parameters annotated with [tys], in order. *)
@@ -2115,6 +2159,13 @@ let annotate_params (tys : Parsetree.core_type list) (e : Parsetree.expression) 
         | (p : Parsetree.function_param) :: rest ->
           (match tys, p.pparam_desc with
            | ty :: tys', Pparam_val (lbl, def, pat) ->
+             (* `?(x=0)`: the function's type takes an `int option`, but
+                `x` itself is the `int`. *)
+             let ty =
+               match def, ty.Parsetree.ptyp_desc with
+               | Some _, Ptyp_constr ({ txt; _ }, [ t ]) when Longident.last txt = "option" -> t
+               | _ -> ty
+             in
              let p' = { p with pparam_desc = Parsetree.Pparam_val (lbl, def, Ast_helper.Pat.constraint_ ~loc:pat.ppat_loc pat ty) } in
              let tys'', rest' = ann tys' rest in
              (tys'', p' :: rest')
@@ -2679,16 +2730,38 @@ let () =
              element type nothing fixes: retry with such free type variables
              read as `unit` (see [default_free_type_vars]). If that doesn't
              type-check either, the original error is the one reported. *)
-          default_free_type_vars := true;
-          let defaulted =
-            try Some (rounds 32 (Hashtbl.copy !last_dict_requirements) resolved |> drop_unused_generics env trait_methods method_names)
-            with _ -> None
+          let retry ~absurd =
+            default_free_type_vars := true;
+            absurd_free_type_vars := absurd;
+            let r =
+              let start = if absurd then never_type_decl :: resolved else resolved in
+              try Ok (rounds 32 (Hashtbl.copy !last_dict_requirements) start |> drop_unused_generics env trait_methods method_names)
+              with exn -> Error exn
+            in
+            default_free_type_vars := false;
+            absurd_free_type_vars := false;
+            r
           in
-          default_free_type_vars := false;
-          (* Even when it fails, the retry got further (e.g. `last []` is
-             resolved), so its error is the one that points at what's really
-             left: report that one, from the final typecheck below. *)
-          match defaulted with Some d -> d | None -> resolved
+          let defaulted = retry ~absurd:false in
+          match defaulted with
+          | Ok d when typechecks d -> d
+          | _ ->
+            (* Then with free type variables read as the empty type, which
+               gets past trait calls that can never run (see
+               [absurd_free_type_vars]). *)
+            match retry ~absurd:true with
+            | Ok a when typechecks a -> a
+            | _ ->
+              (* Even when it fails, the first retry got further (e.g. `last
+                 []` is resolved), so its error is the one that points at
+                 what's really left: report that one, from the final
+                 typecheck below. *)
+              match defaulted with
+              | Ok d -> d
+              | Error (Overload_miss report) ->
+                Location.print_report Format.err_formatter report;
+                exit 1
+              | Error _ -> resolved
         end
       end
     in

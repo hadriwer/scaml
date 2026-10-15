@@ -48,6 +48,7 @@ rule raw_token = parse
   | "->" { ARROW }
   | "." { DOT }
   | "=" { EQ }
+  | "?" { QUESTION }
   | "|" { BAR } (* alone only: `||`, `|>` stay operators (longest match) *)
   | "type" { TYPE }
   | "#use" { USE }

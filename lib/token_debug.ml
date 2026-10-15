@@ -41,6 +41,7 @@ let string_of_token : Parser.token -> string = function
   | Parser.BARRBRACK -> Printf.sprintf "BARRBRACK"
   | Parser.DOT -> Printf.sprintf "DOT"
   | Parser.BAR -> Printf.sprintf "BAR"
+  | Parser.QUESTION -> Printf.sprintf "QUESTION"
 
 (* Repeatedly calls the lexer and prints each token with its source
    position, until EOF (inclusive). Used by the `--tokens` debug mode. *)

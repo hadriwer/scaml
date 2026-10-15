@@ -164,6 +164,18 @@ let mkfun loc pat body =
     None
     (Pfunction_body body)
 
+(* `f a b`, built as OCaml's `(f a) b`; but in one application `f a ~x:b`
+   when an argument is passed by name, since OCaml only matches a label
+   against the parameters of the function it's directly applied to:
+   `(foo 2) ~x:1` would apply the result of `foo 2`. *)
+let mkapp (start, head, rev_args) =
+  let args = List.rev rev_args in
+  if List.for_all (fun (l, _, _) -> l = Nolabel) args then
+    List.fold_left (fun acc (l, e, stop) -> Ast_helper.Exp.apply ~loc:(mkloc start stop) acc [ (l, e) ]) head args
+  else
+    let (_, _, stop) = List.hd rev_args in
+    Ast_helper.Exp.apply ~loc:(mkloc start stop) head (List.map (fun (l, e, _) -> (l, e)) args)
+
 let mkbinop loc op e1 e2 =
   Ast_helper.Exp.apply ~loc (mkident loc op) [ (Nolabel, e1); (Nolabel, e2) ]
 
@@ -279,6 +291,7 @@ let desugar_range_let loc (p : pattern) (e : expression) =
       [ Ast_helper.Exp.case list_pat tuple; Ast_helper.Exp.case (Ast_helper.Pat.any ~loc ()) fail ]
   | _ -> e
 
+(* [params] are plain names; [mk_labelled_fn_expr] takes labelled ones. *)
 let mk_fn_expr loc params body =
   let param_pats =
     match params with
@@ -286,6 +299,23 @@ let mk_fn_expr loc params body =
     | _ -> List.map (fun p -> Ast_helper.Pat.var (Location.mkloc p loc)) params
   in
   List.fold_right (fun pat acc -> mkfun loc pat acc) param_pats body
+
+(* A [fn]'s parameters, each with its label and default value, as in
+   OCaml: `y` is [(Nolabel, None, "y", _)], `?x` is [(Optional "x", None,
+   "x", _)] and `?(x=0)` is [(Optional "x", Some 0, "x", _)], the last
+   being the parameter's location. Zero params still
+   means a unit-taking function; an optional param with no positional one
+   after it is kept as is, OCaml then warns that it can't be omitted. *)
+let mk_labelled_fn_expr loc params body =
+  match params with
+  | [] -> mk_fn_expr loc [] body
+  | _ ->
+    List.fold_right
+      (fun (lbl, def, p, ploc) acc ->
+        Ast_helper.Exp.function_ ~loc
+          [ { pparam_loc = ploc; pparam_desc = Pparam_val (lbl, def, Ast_helper.Pat.var ~loc:ploc (Location.mkloc p ploc)) } ]
+          None (Pfunction_body acc))
+      params body
 
 (* [fn]/[fn]-nested have no `rec` keyword, so we infer it: a function is
    recursive iff it calls itself somewhere in its own body. We look for a
@@ -311,14 +341,14 @@ let has_self_call name (body : expression) =
 let mkfn loc name params body =
   let rec_flag = if has_self_call name body then Recursive else Nonrecursive in
   Ast_helper.Str.value ~loc rec_flag
-    [ Ast_helper.Vb.mk (Ast_helper.Pat.var (Location.mkloc name loc)) (mk_fn_expr loc params body) ]
+    [ Ast_helper.Vb.mk (Ast_helper.Pat.var (Location.mkloc name loc)) (mk_labelled_fn_expr loc params body) ]
 
 (* Nested [fn name(params) { body } <rest>]: becomes a local function
    binding, i.e. sugar for [let (rec) name = fun params -> body in <rest>]. *)
 let mklocalfn loc name params body rest =
   let rec_flag = if has_self_call name body then Recursive else Nonrecursive in
   Ast_helper.Exp.let_ ~loc rec_flag
-    [ Ast_helper.Vb.mk (Ast_helper.Pat.var (Location.mkloc name loc)) (mk_fn_expr loc params body) ]
+    [ Ast_helper.Vb.mk (Ast_helper.Pat.var (Location.mkloc name loc)) (mk_labelled_fn_expr loc params body) ]
     rest
 
 (* One method inside an `impl`. Zero params is a point-free alias -- e.g.
@@ -492,6 +522,7 @@ let load_used_file loc path : Parsetree.structure =
 %token <string> STRING
 %token LPAREN RPAREN LBRACE RBRACE COMMA SEMICOLON EQ LBRACK RBRACK
 %token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TRAIT IMPL TYPE OF
+%token QUESTION
 %token EOF DOT BAR MATCH INDEX_LBRACK LBRACKBAR BARRBRACK TRY WITH EXCEPTION
 
 (* Binary operators, lowest priority first, as in OCaml (see
@@ -544,6 +575,17 @@ op_name:
 fn_params:
   | LPAREN; params = separated_list(COMMA, IDENT); RPAREN { params }
   | params = list(IDENT) { params }
+
+(* A [fn]'s parameters: [fn_params], plus optional ones in the unparenthesized
+   form, `?x` (an option in the body) or `?(x=0)` (with a default value). *)
+fn_def_params:
+  | LPAREN; params = separated_list(COMMA, IDENT); RPAREN { List.map (fun p -> (Nolabel, None, p, mkloc $startpos $endpos)) params }
+  | params = list(fn_def_param) { params }
+
+fn_def_param:
+  | p = IDENT { (Nolabel, None, p, mkloc $startpos $endpos) }
+  | QUESTION; p = IDENT { (Optional p, None, p, mkloc $startpos $endpos) }
+  | QUESTION; LPAREN; p = IDENT; EQ; def = expr; RPAREN { (Optional p, Some def, p, mkloc $startpos $endpos) }
 
 type_declaration:
   | t1 = type_atom; ARROW; rest = type_declaration
@@ -696,7 +738,7 @@ item:
         in
         [ Ast_helper.Str.type_ Recursive [ Ast_helper.Type.mk ~loc ~params c ~kind ] ]
       }
-  | FN; name = IDENT; params = fn_params;
+  | FN; name = IDENT; params = fn_def_params;
     LBRACE; body = block; RBRACE
     { [ mkfn (mkloc $startpos $endpos) name params body ] }
   | OP; name = op_name; params = fn_params;
@@ -709,7 +751,7 @@ item:
       incr operator_cnt;
       Hashtbl.add operator_tbl name f_name;
       Op_names.register name f_name;
-      [ mkfn (mkloc $startpos $endpos) f_name params body ] }
+      [ mkfn (mkloc $startpos $endpos) f_name (List.map (fun p -> (Nolabel, None, p, mkloc $startpos(params) $endpos(params))) params) body ] }
   | USE; path = STRING
     { 
       load_used_file (mkloc $startpos $endpos) path 
@@ -889,7 +931,7 @@ item:
         [ Ast_helper.Str.module_ ~loc (Ast_helper.Mb.mk (Location.mkloc (Some mod_name) loc) mod_expr) ] }
 
 block:
-  | FN; name = IDENT; params = fn_params;
+  | FN; name = IDENT; params = fn_def_params;
     LBRACE; fbody = block; RBRACE; rest = block
     { 
       mklocalfn (mkloc $startpos $endpos) name params fbody rest 
@@ -904,7 +946,7 @@ block:
       incr operator_cnt;
       Hashtbl.add operator_tbl name f_name;
       Op_names.register name f_name;
-      mklocalfn (mkloc $startpos $endpos) f_name params fbody rest 
+      mklocalfn (mkloc $startpos $endpos) f_name (List.map (fun p -> (Nolabel, None, p, mkloc $startpos(params) $endpos(params))) params) fbody rest 
     }
   (* `let x = e;`, or any pattern: `let (a, b) = e;`, `let a, b = e;`,
      `let { name; age } = p;`... *)
@@ -1056,7 +1098,7 @@ expr_bin:
         | Pexp_constant { pconst_desc = Pconst_float (f, None); _ } when f.[0] <> '-' ->
           Ast_helper.Exp.constant ~loc (Ast_helper.Const.float ("-" ^ f))
         | _ -> Ast_helper.Exp.apply ~loc (mkident (mkloc $startpos(c) $endpos(c)) "neg") [ (Nolabel, e) ] }
-  | e = app %prec below_arms { e }
+  | e = app %prec below_arms { mkapp e }
 
 tuple:
   | first = expr_bin; COMMA; rest = separated_nonempty_list(COMMA, expr_bin)
@@ -1077,15 +1119,23 @@ indexable:
     }
   | a = atom { a }
 
+(* A function and its arguments so far, kept apart until [mkapp]: its start,
+   the head, and the arguments (last first), each with its own end. *)
 app:
-  | e1 = app; e2 = indexable
-    { let loc = mkloc $startpos $endpos in
-      match e1.pexp_desc with
+  | f = app; e2 = indexable
+    { match f with
       (* `Some x`, `Node (l, v, r)`: a constructor takes its argument
          directly (a tuple for several), it isn't a function application. *)
-      | Pexp_construct (c, None) -> Ast_helper.Exp.construct ~loc c (Some e2)
-      | _ -> Ast_helper.Exp.apply ~loc e1 [ (Nolabel, e2) ] }
-  | e = indexable { e }
+      | (s, { pexp_desc = Pexp_construct (c, None); _ }, []) ->
+        (s, Ast_helper.Exp.construct ~loc:(mkloc s $endpos) c (Some e2), [])
+      | (s, h, args) -> (s, h, (Nolabel, e2, $endpos) :: args) }
+  (* `foo x=1 2`, `foo 2 x=(a + b)`: an argument passed by name, OCaml's
+     `~x:1`; `?x=None` passes the option itself, OCaml's `?x:None`. *)
+  | f = app; l = IDENT; EQ; e2 = indexable
+    { let (s, h, args) = f in (s, h, (Labelled l, e2, $endpos) :: args) }
+  | f = app; QUESTION; l = IDENT; EQ; e2 = indexable
+    { let (s, h, args) = f in (s, h, (Optional l, e2, $endpos) :: args) }
+  | e = indexable { ($startpos, e, []) }
 
 atom:
   | n = INT { Ast_helper.Exp.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.int n) }

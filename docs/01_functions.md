@@ -116,6 +116,67 @@ let print_double = ^x -> {
 };
 ```
 
+## Optional arguments
+
+As in OCaml, a parameter of a `fn` can be optional:
+
+- `?(x=0)` gives it a default value: in the body, `x` is the value given,
+  or `0`.
+- `?x` alone makes it an option: in the body, `x` is `Some v` when a value
+  `v` is given, `None` when not.
+
+At the call site, an optional argument is passed by its name, `x=<value>`,
+anywhere among the other arguments, or left out:
+
+```rust
+fn foo ?(x=0) y { x + y }
+
+fn bar ?x y {
+    match x {
+        | Some v -> v
+        | None -> y
+    }
+}
+
+fn main {
+    println (foo x=1 2);        // 3
+    println (foo 2 x=1);        // 3
+    println (foo 2);            // 2
+    println (foo x=(1 + 2) 2);  // 5
+
+    println (bar x=1 2);        // 1
+    println (bar 2);            // 2
+    println (bar ?x=None 2);    // 2
+}
+```
+
+A few rules:
+
+- The value after `x=` is a single term: a name, a literal, `t[i]`...
+  Wrap anything else in parentheses: `x=(1 + 2)`, `x=(f 1)`.
+- `?x=` (with the `?`) passes the option itself, `Some ..` or `None`,
+  instead of the value: `bar ?x=(Some 1) 2` is `bar x=1 2`.
+- An optional argument can only be left out when a positional one follows
+  it. In `fn only ?(x=0) { x }`, `x` must always be given, and OCaml warns
+  that it "cannot be erased".
+
+When an optional argument is left out, the `Some` branch never runs, so
+it doesn't matter that nothing fixes the type of its value:
+
+```rust
+fn show_sum ?u v {
+    match u {
+        | Some x -> println (x + v)
+        | None -> println ("Alone : " + (to_string v))
+    }
+}
+
+fn main {
+    show_sum 2;         // Alone : 2
+    show_sum u=1 2;     // 3
+}
+```
+
 ---
 
 [← Introduction](00_introduction.md) · [Index](README.md) · [Next: Loops →](02_loops.md)

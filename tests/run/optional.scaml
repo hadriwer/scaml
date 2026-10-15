@@ -1,0 +1,28 @@
+// optional arguments: `?(x=v)` with a default, `?x` as an option
+fn foo ?(x=0) y { x + y }
+
+fn bar ?x y { match x { Some v -> v | None -> y } }
+
+// `foo2 2`: `u` is always `None`, so `x + v` (no impl for `x`'s unknown
+// type) can never run
+fn foo2 ?u v { match u {
+  | Some x -> println (x + v)
+  | None -> println ("Alone : " + (to_string v))
+}}
+
+fn main {
+    fn local ?(k=100) a b { k * a + b }
+    let a = 10;
+    println (foo x=1 2);
+    println (foo 2 x=1);
+    println (foo 2);
+    println (foo x=(a + 5) 2);
+    println (bar x=1 2);
+    println (bar 2);
+    println (bar ?x=None 2);
+    println (bar ?x=(Some 40) 2);
+    println (local 1 2);
+    println (local k=3 1 2);
+    foo2 2;
+    foo2 u=1 2;
+}
