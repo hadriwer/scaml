@@ -45,7 +45,7 @@ syn match scamlTypeName    "\%(\<type\s\+\%([a-z_][A-Za-z0-9_']*\s\+\)*\)\@<=[a-
 syn match scamlLetName     "\%(\<let\s\+\)\@<=[a-z_][A-Za-z0-9_']*"
 
 " Literals
-syn match  scamlChar       "\%([A-Za-z0-9_']\)\@1<!'[A-Za-z]'"
+syn match  scamlChar       "\%([A-Za-z0-9_']\)\@1<!'\%([^\\'\n]\|\\[\\'"ntrb ]\)'"
 syn match  scamlEscape     contained "\\[nt\"\\]"
 syn match  scamlBadEscape  contained "\\[^nt\"\\]"
 syn region scamlString     start=+"+ skip=+\\.+ end=+"+ contains=scamlEscape,scamlBadEscape

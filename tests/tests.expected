@@ -21,6 +21,15 @@ xyxy
 3
 1
 yes
+=== run/chars.scaml
+[ 1; 2; 3 ]
+[ a; b ]
+[ a;  ; 1; '; \; " ]
+		|
+space
+false
+true
+3
 === run/collections.scaml
 10
 6.

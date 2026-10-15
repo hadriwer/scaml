@@ -44,7 +44,11 @@ rule raw_token = parse
         lexbuf.lex_curr_p <- { lexbuf.lex_curr_p with pos_cnum = lexbuf.lex_curr_p.pos_cnum - 2 };
         INT (int_of_string n) }
   | float as f { FLOAT f } (* Ast helper take a string and not a float *)
-  | '\'' (['a'-'z' 'A'-'Z'] as c) '\'' { CHAR c }
+  (* `'a'`, `' '`, `'1'`, or an escape as in OCaml: `'\n'`, `'\''`... Before
+     [ident], which `'a'` (3 characters too) would also match. *)
+  | '\'' ([^ '\\' '\'' '\n'] as c) '\'' { CHAR c }
+  | '\'' '\\' (['\\' '\'' '"' 'n' 't' 'r' 'b' ' '] as c) '\''
+      { CHAR (match c with 'n' -> '\n' | 't' -> '\t' | 'r' -> '\r' | 'b' -> '\b' | c -> c) }
   | "->" { ARROW }
   | "." { DOT }
   | "=" { EQ }

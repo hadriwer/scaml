@@ -25,6 +25,11 @@ syntax and the standard library may still change between minor versions.
 
 ### Fixed
 
+- Char literals accept any character and OCaml's escapes (`' '`, `'1'`,
+  `'\n'`, `'\''`...), not only a letter: `String.split_on_char ' '` failed
+  with "Unbound value '" (#6).
+- `!=` is now the negation of `==` (structural), not OCaml's physical
+  inequality: `"a" != "a"` was `true`.
 - A trait method called on a value whose type nothing fixes, in code that
   can never run, no longer fails with "No impl of ...": e.g. `x + v` in
   `match u { Some x -> x + v | None -> .. }` when `u` is an optional
