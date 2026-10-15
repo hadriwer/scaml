@@ -44,6 +44,32 @@ op ..= lo hi { if lo <= hi then Range (lo, hi, (<=)) else Range (lo, hi, (>=)) }
 Ranges implement the same traits as lists and arrays (`iter`, `fold_left`,
 `forall`, `exists`, ...), so they work with the same functions.
 
+### Slicing with a range
+
+Indexing a string or an array with a range, instead of an integer, takes
+the part it covers, step and direction included:
+
+```rust
+fn main {
+    let s = "abcdefgh";
+    println s[2..5];            // cde
+    println s[2..=5];           // cdef
+    println s[7..=0];           // hgfedcba (reversed)
+    println s[(0..8) + 2];      // aceg
+
+    let a = [|10; 20; 30; 40; 50|];
+    println a[1..3];            // [| 20; 30 |]
+    println a[(4..=0) - 2];     // [| 50; 30; 10 |]
+}
+```
+
+A slice is built in one go, in time proportional to its length: for a
+string with a step of 1, `s[a..b]` is exactly OCaml's `String.sub s a (b -
+a)`, so it can be used freely, e.g. to cut a string into pieces in a
+loop. A range reaching past the end of the string or the array is an
+error at run time (`Invalid_argument`), and a step of `0` gives an empty
+slice.
+
 ## Looping with `iter`
 
 `iter f c` calls `f` on every element of `c`, in order:
