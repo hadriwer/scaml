@@ -50,6 +50,7 @@ impl concetanable of matrix {
 impl indexable of matrix, int {
     op [] m i { m.arr[i] }
     op []= m i row { m.arr[i] = row }
+    op []+= m i v { m.arr[i] = m.arr[i] + v }
 }
 
 impl iterable of matrix {

@@ -4,11 +4,13 @@
 trait indexable {
     op [] of a -> b -> c
     op []= of a -> b -> c -> unit
+    op []+= of a -> b -> c -> unit
 }
 
 impl indexable of array, int {
     op [] { Array.get }
     op []= { Array.set }
+    op []+= a i v { a[i] = a[i] + v }
 }
 
 impl indexable of bytes, int {
