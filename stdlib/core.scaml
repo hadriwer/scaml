@@ -693,3 +693,18 @@ fn split_apply_on_char f c s {
   }
   aux [] 0 0
 }
+
+impl conversionnable of list {
+  fn to_int _ { failwith "to_int : unsupported on list." }
+  fn to_float _ { failwith "to_float : unsupported on list." }
+  fn to_string l {
+    fn aux acc l' { match l' {
+      | [] -> acc
+      | x::xs -> aux (acc + "; " + (to_string x)) xs
+    }}
+    match l {
+      | [] -> "[  ]"
+      | x::xs -> "[ " + (aux (to_string x) xs) + " ]"
+    }
+  }
+}
