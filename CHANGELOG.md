@@ -36,6 +36,8 @@ syntax and the standard library may still change between minor versions.
   option, tuple...), as OCaml literals: `println ["a"; "b"]` prints
   `[ "a"; "b" ]`, `println (Some 'c')` prints `Some 'c'`. On their own
   (`println "a"`), and in an impl's own `print "..."`, they stay unquoted.
+- `[]+=` in the `indexable` trait, for arrays (`a[i] += v`) and matrices
+  (`m[i] += row` adds `row` to the row `i`).
 - Slicing a string with a range (`s[a..b]`, `s[(a..b) + 2]`) takes linear
   time (`String.sub` for a step of 1), instead of building it char by char.
 

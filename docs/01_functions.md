@@ -257,10 +257,10 @@ fn main {
 `a[i]` calls the operator `[]`, and `a[i] = v` the operator `[]=`: the
 standard library defines them for arrays, strings and matrices, and you
 can define them for your own types. More generally, `[]` followed by any
-operator symbol is an indexing operator, used as `a[i] <symbol> v`:
+operator symbol is an indexing operator, used as `a[i] <symbol> v`. The
+standard library has `[]+=` for arrays, and you can add your own:
 
 ```rust
-op []+= a i v { a[i] = a[i] + v }
 op []<- a i v { let b = Array.copy a; b[i] = v; b }    // a copy, changed
 
 fn main {
@@ -281,7 +281,7 @@ A few rules:
   every other one with a symbol after `[]` take 3 (the container, the
   index, the value).
 - `a[i] += v` is an expression: its value is the operator's (`()` for
-  `[]=` and the `[]+=` above, a new array for `[]<-`), and the value `v`
+  `[]=` and `[]+=`, a new array for `[]<-`), and the value `v`
   extends as far as it can, like `a[1] += 1 + 2`.
 - `a[i] + v` stays an addition on `a[i]` as long as no operator `[]+` is
   declared: the indexing form is only used for operators that exist.

@@ -1,5 +1,4 @@
-// indexing operators: `[]+=`, `[]<-`... declared like `[]=`, used as expressions
-op []+= a i v { a[i] = a[i] + v }
+// indexing operators: the stdlib's `[]+=`, a user `[]<-`, used as expressions
 op []<- a i v { let b = Array.copy a; b[i] = v; b }
 
 fn main {
