@@ -708,3 +708,52 @@ impl conversionnable of list {
     }
   }
 }
+
+impl conversionnable of char {
+  fn to_int c { Char.code c }
+  fn to_float c { scaml_float_of_int (Char.code c) }
+  fn to_string c { String.make 1 c }
+}
+
+impl conversionnable of bytes {
+  fn to_int _ { failwith "to_int : unsupported on bytes." }
+  fn to_float _ { failwith "to_float : unsupported on bytes." }
+  fn to_string b { Bytes.to_string b }
+}
+
+impl conversionnable of unit {
+  fn to_int _ { 0 }
+  fn to_float _ { 0. }
+  fn to_string _ { "()" }
+}
+
+impl conversionnable of array {
+  fn to_int _ { failwith "to_int : unsupported on array." }
+  fn to_float _ { failwith "to_float : unsupported on array." }
+  fn to_string a {
+    let n = Array.length a;
+    fn aux acc i {
+      if i >= n then acc
+      else aux (acc + "; " + (to_string a[i])) (i + 1)
+    }
+    if Array.length a == 0 then "[|  |]"
+    else "[| " + (aux (to_string a[0]) 1) + " |]"
+  }
+}
+
+impl conversionnable of range {
+  fn to_int _ { failwith "to_int : unsupported on range." }
+  fn to_float _ { failwith "to_float : unsupported on range." }
+  fn to_string r {
+    match r {
+      | Range (l, h, comp) -> {
+        let str = if comp 0 0 then " included." else " excluded.";
+        "Range from " + (to_string l) + " to " + (to_string h) + str + " With a step of " + (to_string (range_default_step l h)) + "."
+      }
+      | RangeStep (l, h, comp, step) -> {
+        let str = if comp 0 0 then " included." else " excluded.";
+        "Range from " + (to_string l) + " to " + (to_string h) + str + " With a step of " + (to_string step)
+      }
+    }
+  }
+}
