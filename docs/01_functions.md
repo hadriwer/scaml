@@ -68,6 +68,48 @@ For two parameters, write `fn add x y`, called as `add 1 2`.
 A record needs parentheses around it, `({ x; y })`: a bare `{` after the
 parameters starts the function's body.
 
+## Imperative style
+
+The whole language can also be written in a C-like style, with parentheses
+around a function's parameters and a call's arguments:
+
+```rust
+fn foo(x, y) {
+    println("x = " + to_string(x));
+    println("y = " + to_string(y));
+    println("x + y = " + to_string(x + y));
+}
+
+fn hello() { println("hello"); }
+
+fn main() {
+    foo(2, 3);                  // x = 2, y = 3, x + y = 5
+    hello();                    // hello
+}
+```
+
+There is no special syntax behind it: `fn foo(x, y)` takes a single
+parameter, a pair, destructured (see
+[Destructuring parameters](#destructuring-parameters)), and `foo(2, 3)`
+passes it the pair `(2, 3)`. Likewise `fn hello()` takes `unit`, and
+`hello()` passes it `()`. A single parameter in parentheses, `fn
+square(x)`, is just `x`.
+
+So both styles can be mixed, as long as a function is called the way it
+is defined. The standard library is written in the functional style, its
+functions take their arguments one by one: `map(square, l)` would pass
+`map` a pair, write `map square l` or `map(square)(l)` instead.
+
+```rust
+fn square(x) { x * x }
+
+fn main() {
+    println(square(5));                 // 25
+    println(map square [1; 2; 3]);      // [ 1; 4; 9 ]
+    println(map(square)([1; 2; 3]));    // [ 1; 4; 9 ]
+}
+```
+
 ## Your first program
 
 ```rust
