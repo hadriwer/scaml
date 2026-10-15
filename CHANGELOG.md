@@ -17,6 +17,11 @@ syntax and the standard library may still change between minor versions.
   (`((a, b), c)`), with `_` for an unused one; a record in parentheses,
   `fn norm ({ x; y }) { .. }` (#14). `fn foo (a, b)` used to declare two
   parameters `a` and `b`: write `fn foo a b`.
+- Indexing operators with any suffix after `[]`, not only `[]=`: `op []+=
+  a i v { .. }` is used as `a[i] += v` (#10). They take 3 arguments, and
+  `a[i] <op> v` is an expression (`a[i] = v` too), whose value `v` extends
+  as far as it can. A literal negative number (`-1`) can't be a parameter
+  anymore (it still can in `match` and `let`).
 
 ### Standard library
 

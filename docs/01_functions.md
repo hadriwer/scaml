@@ -34,7 +34,8 @@ A few rules:
   `main ()`.
 - The last expression of a block is its return value. No `return` keyword
   is needed.
-- An operator takes exactly two arguments.
+- An operator takes exactly two arguments, except an indexing one (see
+  [Indexing operators](#indexing-operators)).
 
 ### Destructuring parameters
 
@@ -250,6 +251,42 @@ fn main {
     show_sum u=1 2;     // 3
 }
 ```
+
+## Indexing operators
+
+`a[i]` calls the operator `[]`, and `a[i] = v` the operator `[]=`: the
+standard library defines them for arrays, strings and matrices, and you
+can define them for your own types. More generally, `[]` followed by any
+operator symbol is an indexing operator, used as `a[i] <symbol> v`:
+
+```rust
+op []+= a i v { a[i] = a[i] + v }
+op []<- a i v { let b = Array.copy a; b[i] = v; b }    // a copy, changed
+
+fn main {
+    let a = [|1; 2; 3|];
+    a[0] += 10;
+    a[1] += 1 + 2;              // a[1] += (1 + 2)
+    println a;                  // [| 11; 5; 3 |]
+
+    let b = a[0] <- 0;
+    println b;                  // [| 0; 5; 3 |]
+    println a;                  // [| 11; 5; 3 |]: unchanged
+}
+```
+
+A few rules:
+
+- `[]` takes 2 arguments (the container, the index); `[]=`, `[]+=` and
+  every other one with a symbol after `[]` take 3 (the container, the
+  index, the value).
+- `a[i] += v` is an expression: its value is the operator's (`()` for
+  `[]=` and the `[]+=` above, a new array for `[]<-`), and the value `v`
+  extends as far as it can, like `a[1] += 1 + 2`.
+- `a[i] + v` stays an addition on `a[i]` as long as no operator `[]+` is
+  declared: the indexing form is only used for operators that exist.
+- Several indices work like for `[]=`: `m[i, j] += v` changes `m[i][j]`,
+  and `m[0..n, j] += v` does it on each of those rows.
 
 ---
 

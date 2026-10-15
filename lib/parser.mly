@@ -176,6 +176,11 @@ let mkapp (start, head, rev_args) =
     let (_, _, stop) = List.hd rev_args in
     Ast_helper.Exp.apply ~loc:(mkloc start stop) head (List.map (fun (l, e, _) -> (l, e)) args)
 
+(* How many arguments an operator takes: 3 for an indexing one with a
+   suffix (`[]=`, `[]+=`: the container, the index, the value), else 2. *)
+let op_arity name =
+  if String.length name > 2 && String.sub name 0 2 = "[]" then 3 else 2
+
 let mkbinop loc op e1 e2 =
   Ast_helper.Exp.apply ~loc (mkident loc op) [ (Nolabel, e1); (Nolabel, e2) ]
 
@@ -211,13 +216,13 @@ let rec mkget_indices loc arr = function
     Ast_helper.Exp.apply ~loc:(point i.pexp_loc.loc_start) (mkqident (point i.pexp_loc.loc_start) "Array.map") [ (Nolabel, f); (Nolabel, mkget loc arr i) ]
   | i :: rest -> mkget_indices loc (mkget loc arr i) rest
 
-(* `t[i] = v` -> `[]=` t i v; with several indices, like reading
+(* `t[i] = v` -> `[]=` t i v (`t[i] += v` -> `[]+=` t i v, see [op]); with several indices, like reading
    (`m[i, j]` is `m[i][j]`), all but the last one select the inner value:
    `m[i, j] = v` -> `[]=` (m[i]) j v, and `m[0..n, j] = v` sets `[j]` of
    each of those rows. *)
-let mkassign loc arr (index : expression) index_start v =
+let mkassign ?(op = "[]=") loc arr (index : expression) index_start v =
   let rec go arr = function
-    | [ last ] -> Ast_helper.Exp.apply ~loc (index_fn loc "[]=" "Array.set") [ (Nolabel, arr); (Nolabel, last); (Nolabel, v) ]
+    | [ last ] -> Ast_helper.Exp.apply ~loc (index_fn loc op "Array.set") [ (Nolabel, arr); (Nolabel, last); (Nolabel, v) ]
     | i :: rest when is_range_expr i ->
       let name, row = row_var i in
       let f = mkfun loc (Ast_helper.Pat.var ~loc:Location.none (Location.mkloc name Location.none)) (go row rest) in
@@ -524,6 +529,7 @@ let load_used_file loc path : Parsetree.structure =
 %token LPAREN RPAREN LBRACE RBRACE COMMA SEMICOLON EQ LBRACK RBRACK
 %token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TRAIT IMPL TYPE OF
 %token QUESTION
+%token <string> INDEX_OP
 %token EOF DOT BAR MATCH INDEX_LBRACK LBRACKBAR BARRBRACK TRY WITH EXCEPTION
 
 (* Binary operators, lowest priority first, as in OCaml (see
@@ -572,6 +578,8 @@ op_name:
   | c = binop { c }
   | LBRACK; RBRACK { "[]" }
   | LBRACK; RBRACK; EQ { "[]=" }
+  (* `[]+=`, `[]<-`...: `a[i] += v`, see [assignment]. *)
+  | LBRACK; RBRACK; c = binop { "[]" ^ c }
 
 (* Parameters are patterns: `x`, `(x, y)` (a tuple, destructured), `_`,
    `()`... A record needs parentheses, `({ x; y })`: a bare `{` is where
@@ -751,7 +759,7 @@ item:
     LBRACE; body = block; RBRACE
     {
       let l = List.length params in
-      let expected = if name = "[]=" then 3 else 2 in
+      let expected = op_arity name in
       if l <> expected then raise (MyError (Printf.sprintf "Operator `%s` takes exactly %d arguments, but %d were given." name expected l));
       let f_name = "op___" ^ (string_of_int !operator_cnt) ^ "___" in
       incr operator_cnt;
@@ -946,7 +954,7 @@ block:
     LBRACE; fbody = block; RBRACE; rest = block
     {
       let l = List.length params in
-      let expected = if name = "[]=" then 3 else 2 in
+      let expected = op_arity name in
       if l <> expected then raise (MyError (Printf.sprintf "Operator `%s` takes exactly %d arguments, but %d were given." name expected l));
       let f_name = "op___" ^ (string_of_int !operator_cnt) ^ "___" in
       incr operator_cnt;
@@ -968,24 +976,22 @@ block:
     }
   | e = expr; SEMICOLON | e = expr 
       { e }
-  (* `t[i] = v;`, sugar for `Array.set t i v` (`m[i][j] = v` sets in `m[i]`). *)
-  | a = assignment; SEMICOLON; b = block
-    { Ast_helper.Exp.sequence ~loc:(mkloc $startpos $endpos) a b }
-  | a = assignment; SEMICOLON | a = assignment
-      { a }
 
+(* `t[i] = v`, sugar for `Array.set t i v` (`m[i][j] = v` sets in `m[i]`),
+   or any indexing operator with a suffix, `t[i] += v` for a declared
+   `[]+=`. An expression: its value is the operator's (`()` for `[]=`), and
+   the value `v` extends as far as it can (`t[i] += 1 + 2`). *)
 assignment:
   | a = indexable; INDEX_LBRACK; index = expr; RBRACK; EQ; v = expr
     { mkassign (mkloc $startpos $endpos) a index $startpos(index) v }
+  | a = indexable; INDEX_LBRACK; index = expr; RBRACK; c = INDEX_OP; v = expr
+    { mkassign ~op:("[]" ^ c) (mkloc $startpos $endpos) a index $startpos(index) v }
 
 body:
   | LBRACE; b = block; RBRACE
       { b }
   | e = expr
       { e }
-  (* `^j -> t[j] = false`, `if c then t[i] = 0 else ()`: no braces needed. *)
-  | a = assignment
-      { a }
 
 expr:
   | IF; c = expr; THEN; t = body; ELSE; e = body
@@ -999,6 +1005,7 @@ expr:
   | TRY; e = body; WITH; LBRACE; option(BAR); cases = separated_nonempty_list(BAR, match_case); RBRACE
     { Ast_helper.Exp.try_ ~loc:(mkloc $startpos $endpos) e cases }
   | e = tuple { e }
+  | a = assignment { a }
 
 (* A tuple needs no parentheses here, as in match arms. *)
 let_pattern:
@@ -1037,6 +1044,21 @@ app_pattern:
 
 simple_pattern:
   | p = param_pattern { p }
+  (* `-1`, `-2.5`: not in a parameter, where `op [] -1` would be ambiguous
+     with an operator `[]-` (and a parameter matching one number is of no
+     use anyway). *)
+  | c = OP_ADD; n = INT
+      { let loc = mkloc $startpos $endpos in
+        if c <> "-" then
+          raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
+            (Printf.sprintf "`%s` can't be used in a pattern (only `-` before a number)" c)));
+        Ast_helper.Pat.constant ~loc (Ast_helper.Const.int (- n)) }
+  | c = OP_ADD; f = FLOAT
+      { let loc = mkloc $startpos $endpos in
+        if c <> "-" then
+          raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
+            (Printf.sprintf "`%s` can't be used in a pattern (only `-` before a number)" c)));
+        Ast_helper.Pat.constant ~loc (Ast_helper.Const.float ("-" ^ f)) }
   (* `{ name = n; age }`: a field alone binds a variable of the same name. *)
   | LBRACE; fields = separated_nonempty_list(SEMICOLON, field_pattern); RBRACE
     { Ast_helper.Pat.record ~loc:(mkloc $startpos $endpos) fields Open }
@@ -1050,18 +1072,6 @@ param_pattern:
       else if is_capitalized x then Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident x) loc) None
       else Ast_helper.Pat.var ~loc (Location.mkloc x loc) }
   | n = INT { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.int n) }
-  | c = OP_ADD; n = INT
-      { let loc = mkloc $startpos $endpos in
-        if c <> "-" then
-          raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
-            (Printf.sprintf "`%s` can't be used in a pattern (only `-` before a number)" c)));
-        Ast_helper.Pat.constant ~loc (Ast_helper.Const.int (- n)) }
-  | c = OP_ADD; f = FLOAT
-      { let loc = mkloc $startpos $endpos in
-        if c <> "-" then
-          raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
-            (Printf.sprintf "`%s` can't be used in a pattern (only `-` before a number)" c)));
-        Ast_helper.Pat.constant ~loc (Ast_helper.Const.float ("-" ^ f)) }
   | s = STRING { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.string s) }
   | c = CHAR { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.char c) }
   | TRUE { mkbool_pat (mkloc $startpos $endpos) true }

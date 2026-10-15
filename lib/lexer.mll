@@ -107,14 +107,47 @@ and read_string buf = parse
    the lexer's buffer (whose previous byte may be gone after a refill). *)
 let last : (Lexing.lexbuf * Parser.token * int) option ref = ref None
 
+(* Per lexbuf, the brackets still open, innermost first: [true] for an
+   index's (`a[`), [false] for a list's (`[`). *)
+let open_brackets : (Lexing.lexbuf * bool list ref) list ref = ref []
+
+let brackets_of lexbuf =
+  match List.find_opt (fun (lb, _) -> lb == lexbuf) !open_brackets with
+  | Some (_, s) -> s
+  | None -> let s = ref [] in open_brackets := (lexbuf, s) :: !open_brackets; s
+
+(* Whether the last token was a `]` closing an index (`a[i]`). *)
+let after_index = ref false
+
+let operator_symbol = function
+  | OP_OR s | OP_AND s | OP_CMP s | OP_AT s | OP_CONS s | OP_ADD s | OP_MUL s | OP_POW s -> Some s
+  | _ -> None
+
 let token lexbuf =
   let tok = raw_token lexbuf in
   let start = (Lexing.lexeme_start_p lexbuf).pos_cnum in
+  let brackets = brackets_of lexbuf in
+  let same_buf = match !last with Some (lb, _, _) -> lb == lexbuf | None -> false in
   let tok =
     match tok, !last with
     | LBRACK, Some (lb, (IDENT _ | QIDENT _ | RPAREN | RBRACK | BARRBRACK), end_cnum) when lb == lexbuf && end_cnum = start -> INDEX_LBRACK
+    (* `a[i] += v`: an operator right after an index's `]` is the rest of
+       an indexing operator, `[]+=`, when one is declared (otherwise it's
+       the binary operator: `a[i] + v`). *)
+    | _ when same_buf && !after_index ->
+      (match operator_symbol tok with
+       | Some c when Op_names.is_declared ("[]" ^ c) -> INDEX_OP c
+       | _ -> tok)
     | _ -> tok
   in
+  (match tok with
+   | INDEX_LBRACK -> brackets := true :: !brackets
+   | LBRACK -> brackets := false :: !brackets
+   | _ -> ());
+  after_index :=
+    (match tok with
+     | RBRACK -> (match !brackets with b :: rest -> brackets := rest; b | [] -> false)
+     | _ -> false);
   last := Some (lexbuf, tok, (Lexing.lexeme_end_p lexbuf).pos_cnum);
   tok
 }

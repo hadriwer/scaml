@@ -1,0 +1,26 @@
+// indexing operators: `[]+=`, `[]<-`... declared like `[]=`, used as expressions
+op []+= a i v { a[i] = a[i] + v }
+op []<- a i v { let b = Array.copy a; b[i] = v; b }
+
+fn main {
+  let a = [|1; 2; 3|];
+  a[0] += 10;
+  a[1] += 1 + 2;
+  println a;
+  println (a[2] + 100);
+  println ([1; 2] @ [3]);
+  let b = a[0] <- 0;
+  println a;
+  println b;
+  println ((a[1] <- 7)[1]);
+  let m = [| [|1; 2|]; [|3; 4|] |];
+  m[1, 0] += 5;
+  println m;
+  m[0..2, 1] += 100;
+  println m;
+  iter (^i -> a[i] += 1) [0; 1; 2];
+  println a;
+  if true then a[0] = 42 else ();
+  println a;
+  println (a[0] == 42);
+}

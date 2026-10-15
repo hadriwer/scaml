@@ -3,7 +3,15 @@
    error messages can show `+` instead of the internal name. *)
 let symbol_of_fn : (string, string) Hashtbl.t = Hashtbl.create 16
 
-let register symbol fn = Hashtbl.replace symbol_of_fn fn symbol
+(* The operator symbols declared so far (`+`, `[]`, `[]+=`...), for the
+   lexer to tell `a[i] += v` (a declared `[]+=`) from `a[i] + v`. *)
+let declared : (string, unit) Hashtbl.t = Hashtbl.create 16
+
+let register symbol fn =
+  Hashtbl.replace symbol_of_fn fn symbol;
+  Hashtbl.replace declared symbol ()
+
+let is_declared symbol = Hashtbl.mem declared symbol
 
 let is_digit c = c >= '0' && c <= '9'
 let is_ident_char c = is_digit c || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c = '_' || c = '\''
