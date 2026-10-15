@@ -557,16 +557,27 @@ impl negatable of list {
     fn neg l { List.map (^x -> neg x) l }
 }
 
+// How many indices `low`, `low + st`, ... a range goes through before
+// [range_continues] stops it.
+fn range_count low high comp st {
+    let inclusive = comp high high;
+    if st > 0 then {
+        let bound = if inclusive then high + 1 else high;
+        if bound <= low then 0 else (bound - low + st - 1) / st
+    } else if st < 0 then {
+        let bound = if inclusive then high - 1 else high;
+        if bound >= low then 0 else (low - bound - st - 1) / (0 - st)
+    } else 0
+}
+
 impl indexable of string, range {
+    // Built in one go (`String.sub` for a step of 1), not char by char.
     op [] s r {
         fn walk low high comp step {
             let st = range_step low high step;
-            fn go acc i {
-                if range_continues comp i high st
-                then go (acc + String.make 1 s[i]) (i + st)
-                else acc
-            }
-            if st == 0 then "" else go "" low
+            let n = range_count low high comp st;
+            if st == 1 then String.sub s low n
+            else String.init n (^k -> s[low + k * st])
         }
         match r {
             | Range (low, high, comp) -> walk low high comp (range_default_step low high)
@@ -664,4 +675,19 @@ impl sortable of array {
 
 impl sortable of list {
   fn sort { List.sort }
+}
+
+fn split_apply_on_char f c s {
+  let l = len s;
+  fn aux acc beg end {
+    if end >= l then List.rev ((f s[beg..end])::acc)
+    else {
+      if s[end] == c
+      then
+        aux ((f s[beg..end])::acc) (end+1) (end+1)
+      else
+        aux acc beg (end+1)
+    }
+  }
+  aux [] 0 0
 }
