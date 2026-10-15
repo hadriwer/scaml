@@ -1,0 +1,29 @@
+
+let pi = 3.14159265358979323846;
+
+fn relu x { maxn 0. x }
+
+fn leaky_relu ?(alpha=0.01) x { maxn (alpha * x) x }
+
+fn sigmoid x { 1 / (1 + exp (-x)) }
+
+fn silu x { sigmoid x * x }
+
+fn tanh x {
+  let pose, nege = exp x, exp (-x);
+  (pose - nege) / (pose + nege)
+}
+
+fn softmax x {
+  let exp_x = map exp x;
+  exp_x / (sum 0. exp_x)
+}
+
+fn is_close ?(rel_tol=0.000000001) ?(abs_tol=0.000000001) a b {
+  a == b || abs_float (a - b) <= maxn (rel_tol * maxn (abs_float a) (abs_float b)) abs_tol
+}
+
+fn cross_entropy p q {
+  let pq = p * (map log q);
+  - (sum 0. pq)
+}

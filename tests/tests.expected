@@ -54,6 +54,17 @@ false
 4. + 4.i
 4. - 3.i
 0. + 2.i
+=== run/constants.scaml
+3.14159
+12.56636
+(0, 0)
+480000
+(0, 1, 2)
+3
+size: 100
+[ 1; 4; 9 ]
+200
+[| 11; 2; 3 |]
 === run/destructuring.scaml
 3
 10
@@ -196,4 +207,8 @@ exit 1
 === errors/type_mismatch.scaml
 File "errors/type_mismatch.scaml", line 2, characters 24-25:
 Error: The constant 3 has type int but an expression was expected of type 'a list
+exit 1
+=== errors/uppercase_constant.scaml
+File "errors/uppercase_constant.scaml", line 1, characters 4-6:
+Error: a constant's name starts with a lowercase letter: `PI` would be a constructor, write `pi`
 exit 1

@@ -1,0 +1,27 @@
+// top-level constants: `let name = value;`, any pattern
+let pi = 3.14159;
+let max_size = 100;
+let origin = (0, 0);
+let (w, h) = (800, 600);
+let a, b, c = 0..3;
+let total = 1 + 2;
+let label = "size: " + to_string max_size;
+let squares = map (^x -> x * x) [1; 2; 3];
+let grid = [|1; 2; 3|];
+
+fn area r { pi * r * r }
+fn twice x { x + x }
+
+fn main {
+  println pi;
+  println (area 2.);
+  println origin;
+  println (w * h);
+  println (a, b, c);
+  println total;
+  println label;
+  println squares;
+  println (twice max_size);
+  grid[0] += 10;
+  println grid;
+}
