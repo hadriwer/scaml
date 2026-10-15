@@ -22,6 +22,8 @@ syntax and the standard library may still change between minor versions.
   `a[i] <op> v` is an expression (`a[i] = v` too), whose value `v` extends
   as far as it can. A literal negative number (`-1`) can't be a parameter
   anymore (it still can in `match` and `let`).
+- Constants: a `let` outside any function, `let pi = 3.14;`, with any
+  pattern (`let (w, h) = (800, 600);`). The name is lowercase.
 
 ### Standard library
 
@@ -38,6 +40,12 @@ syntax and the standard library may still change between minor versions.
   (`println "a"`), and in an impl's own `print "..."`, they stay unquoted.
 - `[]+=` in the `indexable` trait, for arrays (`a[i] += v`) and matrices
   (`m[i] += row` adds `row` to the row `i`).
+- `stdlib/math.scaml` (`#use "stdlib/math.scaml"`): the constant `pi`,
+  and `relu`, `leaky_relu` (optional `alpha`, `0.01` by default),
+  `sigmoid`, `tanh`, `softmax` (on a float array), and `is_close a b`,
+  float equality up to rounding errors like Python's `math.isclose`
+  (optional `rel_tol` and `abs_tol`, both `1e-9` by default, so that
+  `sin pi |> is_close 0.` holds).
 - Slicing a string with a range (`s[a..b]`, `s[(a..b) + 2]`) takes linear
   time (`String.sub` for a step of 1), instead of building it char by char.
 

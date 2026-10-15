@@ -288,6 +288,33 @@ A few rules:
 - Several indices work like for `[]=`: `m[i, j] += v` changes `m[i][j]`,
   and `m[0..n, j] += v` does it on each of those rows.
 
+## Constants
+
+A constant is a `let` outside any function, written like a `let` inside
+one, `;` included:
+
+```rust
+let pi = 3.14159;
+let max_size = 100;
+let (width, height) = (800, 600);       // any pattern, as in a block
+let label = "size: " + to_string max_size;
+
+fn area r { pi * r * r }
+
+fn main {
+    println (area 2.);                  // 12.56636
+    println (width * height);           // 480000
+    println label;                      // size: 100
+}
+```
+
+A few rules:
+
+- A constant's name starts with a lowercase letter, like a variable's:
+  `PI` would be a constructor (as in OCaml), write `pi`.
+- It is defined before what uses it, like a function.
+- It is computed once, when the program starts, before `main`.
+
 ---
 
 [← Introduction](00_introduction.md) · [Index](README.md) · [Next: Loops →](02_loops.md)

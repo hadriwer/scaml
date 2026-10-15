@@ -752,6 +752,18 @@ item:
         in
         [ Ast_helper.Str.type_ Recursive [ Ast_helper.Type.mk ~loc ~params c ~kind ] ]
       }
+  (* `let pi = 3.14;`: a constant, or any pattern (`let (w, h) = (8, 6);`),
+     like a `let` in a block. Its name is lowercase: `PI` would be a
+     constructor, as in OCaml. *)
+  | LET; p = let_pattern; EQ; e = expr; SEMICOLON
+    { let loc = mkloc $startpos $endpos in
+      (match p.ppat_desc with
+       | Ppat_construct ({ txt = Longident.Lident c; loc = cloc }, None) when is_capitalized c ->
+         raise (Location.Error (Location.error ~loc:cloc
+           (Printf.sprintf "a constant's name starts with a lowercase letter: `%s` would be a constructor, write `%s`"
+              c (String.lowercase_ascii c))))
+       | _ -> ());
+      [ Ast_helper.Str.value ~loc Nonrecursive [ Ast_helper.Vb.mk ~loc p (desugar_range_let loc p e) ] ] }
   | FN; name = IDENT; params = fn_def_params;
     LBRACE; body = block; RBRACE
     { [ mkfn (mkloc $startpos $endpos) name params body ] }

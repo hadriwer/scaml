@@ -34,10 +34,15 @@ let has_main (structure : Parsetree.structure) =
 let provided_names (item : Parsetree.structure_item) : string list =
   match item.pstr_desc with
   | Pstr_value (_, vbs) ->
-    List.filter_map
-      (fun (vb : Parsetree.value_binding) ->
-        match vb.pvb_pat.ppat_desc with Ppat_var { txt; _ } -> Some txt | _ -> None)
-      vbs
+    (* Every variable of each pattern: `let (w, h) = ..;` provides both. *)
+    let names = ref [] in
+    let pat self (p : Parsetree.pattern) =
+      (match p.ppat_desc with Ppat_var { txt; _ } | Ppat_alias (_, { txt; _ }) -> names := txt :: !names | _ -> ());
+      Ast_iterator.default_iterator.pat self p
+    in
+    let it = { Ast_iterator.default_iterator with pat } in
+    List.iter (fun (vb : Parsetree.value_binding) -> it.pat it vb.pvb_pat) vbs;
+    List.rev !names
   | Pstr_module mb -> (match mb.pmb_name.txt with Some n -> [ n ] | None -> [])
   | Pstr_modtype mtd -> [ mtd.pmtd_name.txt ]
   | Pstr_type (_, decls) ->
