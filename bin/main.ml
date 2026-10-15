@@ -1438,6 +1438,39 @@ let fresh_dispatch_module_name () =
      `iter` -> `let module M = Iterable__array (struct type a = int end)
                 in M.iter`.
    Everything else is passed through unchanged. *)
+(* A string or a char shown inside a structure (a list's element, a tuple's
+   component...) is quoted, as an OCaml literal: `[ "a"; "b" ]`, `Some 'c'`,
+   while `println "a"` (or an impl's own `print "[ "`) prints it as is. So
+   where its `showable` impl is passed to a container's impl, it is replaced
+   by this one, built inline: only OCaml's own stdlib, so nothing the
+   pruning of SCaml's stdlib could have dropped. *)
+let quoted_showable loc name =
+  let ty, fmt =
+    if name = impl_module_name "showable" "string" then ("string", "%S")
+    else if name = impl_module_name "showable" "char" then ("char", "%C")
+    else ("", "")
+  in
+  if ty = "" then None
+  else
+    Some
+      (Ast_helper.Mod.structure ~loc
+         (Parse.implementation (Lexing.from_string
+            (Printf.sprintf
+               "type a = %s\nlet print (x : a) = Printf.printf \"%s\" x\nlet println (x : a) = print x; print_newline ()\n"
+               ty fmt))))
+
+(* The module a dictionary stands for: an impl, applied to the impls of its
+   own elements ([nested], quoted for a string or a char, see
+   [quoted_showable]). *)
+let rec mod_of_dict ~nested loc (Dict (name, args)) =
+  match (if nested && args = [] then quoted_showable loc name else None) with
+  | Some m -> m
+  | None ->
+    List.fold_left
+      (fun acc a -> Ast_helper.Mod.apply ~loc acc (mod_of_dict ~nested:true loc a))
+      (Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident name) loc))
+      args
+
 let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (structure : Parsetree.structure) =
   let expr (mapper : Ast_mapper.mapper) (e : Parsetree.expression) =
     match e.pexp_desc with
@@ -1459,14 +1492,8 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
        | Some (DictCall dict) ->
          let loc = e.pexp_loc in
          let fresh = fresh_dispatch_module_name () in
-         let rec mod_of (Dict (name, args)) =
-           List.fold_left
-             (fun acc a -> Ast_helper.Mod.apply ~loc acc (mod_of a))
-             (Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident name) loc))
-             args
-         in
          Ast_helper.Exp.struct_item ~loc
-           (Ast_helper.Str.module_ ~loc (Ast_helper.Mb.mk ~loc (Location.mkloc (Some fresh) loc) (mod_of dict)))
+           (Ast_helper.Str.module_ ~loc (Ast_helper.Mb.mk ~loc (Location.mkloc (Some fresh) loc) (mod_of_dict ~nested:false loc dict)))
            (Ast_helper.Exp.ident ~loc (Location.mkloc (Option.get (Longident.unflatten [ fresh; name ])) loc))
        | Some (Functored (mod_name, arg)) ->
          let loc = e.pexp_loc in
@@ -1474,13 +1501,7 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
          let functor_arg_mod =
            match arg with
            | DictModule dict ->
-             let rec mod_of (Dict (name, args)) =
-               List.fold_left
-                 (fun acc a -> Ast_helper.Mod.apply ~loc acc (mod_of a))
-                 (Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident name) loc))
-                 args
-             in
-             mod_of dict
+             mod_of_dict ~nested:true loc dict
            | FieldStruct fields ->
              Ast_helper.Mod.structure ~loc
                (List.map

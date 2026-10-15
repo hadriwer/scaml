@@ -1,0 +1,19 @@
+
+fn read_line_opt ic {
+  try Some (input_line ic) with { End_of_file -> None }
+}
+
+fn read_lines ic {
+  fn aux acc { match read_line_opt ic {
+    | None -> List.rev acc
+    | Some line -> aux (line::acc)
+  }}
+  aux []
+}
+
+fn read_on_path path {
+  let ic = open_in path;
+  let res = read_lines ic;
+  close_in ic;
+  res
+}

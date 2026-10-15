@@ -1,0 +1,25 @@
+// strings and chars are quoted inside a structure, not on their own
+type point { x of int; y of int }
+impl showable of point {
+  fn print p { print "Point("; print p.x; print ", "; print p.y; print ")" }
+  fn println p { print p; println "" }
+}
+fn show_all l { println l }
+fn main {
+  println "Hello";
+  print "no newline"; println "";
+  println ["a"; "b"];
+  println [|"a"; "b\"c"|];
+  println (Some "x");
+  println (Some 'c');
+  println ['a'; '\n'];
+  println ("a", 1, 'z');
+  println [[ "x" ]; [ "y"; "z" ]];
+  println [Some "x"; None];
+  println [1; 2];
+  println true;
+  println [{ x = 1; y = 2 }];
+  println 'c';
+  show_all ["generic"];
+  println [("a", [ "b" ])];
+}

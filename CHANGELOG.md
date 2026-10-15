@@ -22,6 +22,12 @@ syntax and the standard library may still change between minor versions.
 - `compare` and `sortable` trait (`sort`) for `array`, `list` and `matrix`
   (each row sorted); `sort` returns a sorted collection and leaves arrays
   unchanged (use `Array.sort` to sort in place).
+- Strings and chars are shown quoted inside a structure (list, array,
+  option, tuple...), as OCaml literals: `println ["a"; "b"]` prints
+  `[ "a"; "b" ]`, `println (Some 'c')` prints `Some 'c'`. On their own
+  (`println "a"`), and in an impl's own `print "..."`, they stay unquoted.
+- Slicing a string with a range (`s[a..b]`, `s[(a..b) + 2]`) takes linear
+  time (`String.sub` for a step of 1), instead of building it char by char.
 
 ### Fixed
 
