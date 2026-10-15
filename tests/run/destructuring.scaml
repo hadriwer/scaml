@@ -1,0 +1,35 @@
+// parameters are patterns: tuples destructured, records in parentheses, `_`
+type point { x of int; y of int }
+type pair { a of int; b of int }
+
+fn foo (x, y) { x + y }
+fn bar ((a, b), c) { a * b + c }
+fn baz ({ x; y }) { x - y }
+fn ign _ y { y }
+fn mixed (a, b) c ?(k=1) d { k * (a + b + c + d) }
+
+op <+> (a, b) (c, d) { (a + c, b + d) }
+
+trait swappable {
+  type t
+  fn swap of t -> t
+}
+impl swappable of pair {
+  fn swap ({ a; b }) { { a = b; b = a } }
+}
+
+fn main() {
+  println (foo (1, 2));
+  println (bar ((2, 3), 4));
+  println (baz { x = 10; y = 3 });
+  println (ign "unused" 5);
+  println (mixed (1, 2) 3 4);
+  println (mixed (1, 2) 3 k=10 4);
+  println ((1, 2) <+> (10, 20));
+  println (map (^(k, v) -> k + v) [(1, 2); (3, 4)]);
+  println (map (^(_, v) w -> v * w) [(1, 2)] |> List.map (^f -> f 10));
+  fn local ((a, _), c) { a + c }
+  println (local ((1, 99), 2));
+  let s = swap { a = 1; b = 2 };
+  println s.a;
+}

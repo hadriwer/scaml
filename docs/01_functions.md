@@ -36,6 +36,38 @@ A few rules:
   is needed.
 - An operator takes exactly two arguments.
 
+### Destructuring parameters
+
+A parameter can be a pattern, as in `let` or `match`: a tuple is taken
+apart right in the parameter list. This works for functions, operators,
+impl methods and anonymous functions:
+
+```rust
+type point { x of int; y of int }
+
+fn add (x, y) { x + y }
+fn area ((x1, y1), (x2, y2)) { (x2 - x1) * (y2 - y1) }
+fn second _ y { y }                     // `_`: a parameter not used
+fn norm1 ({ x; y }) { abs x + abs y }   // a record, in parentheses
+
+op <+> (a, b) (c, d) { (a + c, b + d) }
+
+fn main {
+    println (add (1, 2));                       // 3
+    println (area ((0, 0), (2, 3)));            // 6
+    println (second "ignored" 5);               // 5
+    println (norm1 { x = 3; y = 0 - 4 });       // 7
+    println ((1, 2) <+> (10, 20));              // (11, 22)
+    println (map (^(k, v) -> k * v) [(1, 2); (3, 4)]);  // [ 2; 12 ]
+}
+```
+
+`fn add (x, y)` takes **one** parameter, a pair, called as `add (1, 2)`.
+For two parameters, write `fn add x y`, called as `add 1 2`.
+
+A record needs parentheses around it, `({ x; y })`: a bare `{` after the
+parameters starts the function's body.
+
 ## Your first program
 
 ```rust

@@ -12,6 +12,11 @@ syntax and the standard library may still change between minor versions.
   { .. }`. Passed by name, anywhere among the other arguments (`foo x=1 2`,
   `foo 2 x=1`), or left out (`foo 2`); `?x=` passes the option itself
   (`foo ?x=None 2`).
+- Parameters are patterns, in `fn`, `op`, impl methods and lambdas: a tuple
+  is destructured, `fn foo (x, y) { .. }`, `^(k, v) -> ..`, also nested
+  (`((a, b), c)`), with `_` for an unused one; a record in parentheses,
+  `fn norm ({ x; y }) { .. }` (#14). `fn foo (a, b)` used to declare two
+  parameters `a` and `b`: write `fn foo a b`.
 
 ### Standard library
 

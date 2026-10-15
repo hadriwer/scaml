@@ -54,6 +54,18 @@ false
 4. + 4.i
 4. - 3.i
 0. + 2.i
+=== run/destructuring.scaml
+3
+10
+7
+5
+10
+100
+(11, 22)
+[ 3; 7 ]
+[ 20 ]
+3
+2
 === run/exceptions.scaml
 5
 0

@@ -291,19 +291,20 @@ let desugar_range_let loc (p : pattern) (e : expression) =
       [ Ast_helper.Exp.case list_pat tuple; Ast_helper.Exp.case (Ast_helper.Pat.any ~loc ()) fail ]
   | _ -> e
 
-(* [params] are plain names; [mk_labelled_fn_expr] takes labelled ones. *)
+(* [params] are patterns (`x`, `(x, y)`, `_`...); [mk_labelled_fn_expr]
+   takes labelled ones. *)
 let mk_fn_expr loc params body =
   let param_pats =
     match params with
     | [] -> [ Ast_helper.Pat.construct (Location.mkloc (Longident.Lident "()") loc) None ]
-    | _ -> List.map (fun p -> Ast_helper.Pat.var (Location.mkloc p loc)) params
+    | _ -> params
   in
   List.fold_right (fun pat acc -> mkfun loc pat acc) param_pats body
 
 (* A [fn]'s parameters, each with its label and default value, as in
-   OCaml: `y` is [(Nolabel, None, "y", _)], `?x` is [(Optional "x", None,
-   "x", _)] and `?(x=0)` is [(Optional "x", Some 0, "x", _)], the last
-   being the parameter's location. Zero params still
+   OCaml: `y` is [(Nolabel, None, y, _)], `?x` is [(Optional "x", None,
+   x, _)] and `?(x=0)` is [(Optional "x", Some 0, x, _)], with the
+   parameter's pattern (here the variables `y`, `x`), then its location. Zero params still
    means a unit-taking function; an optional param with no positional one
    after it is kept as is, OCaml then warns that it can't be omitted. *)
 let mk_labelled_fn_expr loc params body =
@@ -311,9 +312,9 @@ let mk_labelled_fn_expr loc params body =
   | [] -> mk_fn_expr loc [] body
   | _ ->
     List.fold_right
-      (fun (lbl, def, p, ploc) acc ->
+      (fun (lbl, def, pat, ploc) acc ->
         Ast_helper.Exp.function_ ~loc
-          [ { pparam_loc = ploc; pparam_desc = Pparam_val (lbl, def, Ast_helper.Pat.var ~loc:ploc (Location.mkloc p ploc)) } ]
+          [ { pparam_loc = ploc; pparam_desc = Pparam_val (lbl, def, pat) } ]
           None (Pfunction_body acc))
       params body
 
@@ -572,20 +573,25 @@ op_name:
   | LBRACK; RBRACK { "[]" }
   | LBRACK; RBRACK; EQ { "[]=" }
 
+(* Parameters are patterns: `x`, `(x, y)` (a tuple, destructured), `_`,
+   `()`... A record needs parentheses, `({ x; y })`: a bare `{` is where
+   the body starts. *)
 fn_params:
-  | LPAREN; params = separated_list(COMMA, IDENT); RPAREN { params }
-  | params = list(IDENT) { params }
+  | params = list(param_pattern) { params }
 
-(* A [fn]'s parameters: [fn_params], plus optional ones in the unparenthesized
-   form, `?x` (an option in the body) or `?(x=0)` (with a default value). *)
+(* A [fn]'s parameters: [fn_params], plus optional ones, `?x` (an option in
+   the body) or `?(x=0)` (with a default value). *)
 fn_def_params:
-  | LPAREN; params = separated_list(COMMA, IDENT); RPAREN { List.map (fun p -> (Nolabel, None, p, mkloc $startpos $endpos)) params }
   | params = list(fn_def_param) { params }
 
 fn_def_param:
-  | p = IDENT { (Nolabel, None, p, mkloc $startpos $endpos) }
-  | QUESTION; p = IDENT { (Optional p, None, p, mkloc $startpos $endpos) }
-  | QUESTION; LPAREN; p = IDENT; EQ; def = expr; RPAREN { (Optional p, Some def, p, mkloc $startpos $endpos) }
+  | p = param_pattern { (Nolabel, None, p, p.ppat_loc) }
+  | QUESTION; p = IDENT
+    { let loc = mkloc $startpos(p) $endpos(p) in
+      (Optional p, None, Ast_helper.Pat.var ~loc (Location.mkloc p loc), mkloc $startpos $endpos) }
+  | QUESTION; LPAREN; p = IDENT; EQ; def = expr; RPAREN
+    { let loc = mkloc $startpos(p) $endpos(p) in
+      (Optional p, Some def, Ast_helper.Pat.var ~loc (Location.mkloc p loc), mkloc $startpos $endpos) }
 
 type_declaration:
   | t1 = type_atom; ARROW; rest = type_declaration
@@ -751,7 +757,7 @@ item:
       incr operator_cnt;
       Hashtbl.add operator_tbl name f_name;
       Op_names.register name f_name;
-      [ mkfn (mkloc $startpos $endpos) f_name (List.map (fun p -> (Nolabel, None, p, mkloc $startpos(params) $endpos(params))) params) body ] }
+      [ mkfn (mkloc $startpos $endpos) f_name (List.map (fun (p : pattern) -> (Nolabel, None, p, p.ppat_loc)) params) body ] }
   | USE; path = STRING
     { 
       load_used_file (mkloc $startpos $endpos) path 
@@ -946,7 +952,7 @@ block:
       incr operator_cnt;
       Hashtbl.add operator_tbl name f_name;
       Op_names.register name f_name;
-      mklocalfn (mkloc $startpos $endpos) f_name (List.map (fun p -> (Nolabel, None, p, mkloc $startpos(params) $endpos(params))) params) fbody rest 
+      mklocalfn (mkloc $startpos $endpos) f_name (List.map (fun (p : pattern) -> (Nolabel, None, p, p.ppat_loc)) params) fbody rest 
     }
   (* `let x = e;`, or any pattern: `let (a, b) = e;`, `let a, b = e;`,
      `let { name; age } = p;`... *)
@@ -984,7 +990,7 @@ body:
 expr:
   | IF; c = expr; THEN; t = body; ELSE; e = body
     { Ast_helper.Exp.ifthenelse ~loc:(mkloc $startpos $endpos) c t (Some e) }
-  | FUN; params = nonempty_list(IDENT); ARROW; e = body
+  | FUN; params = nonempty_list(param_pattern); ARROW; e = body
     { mk_fn_expr (mkloc $startpos $endpos) params e }
   | MATCH; e = expr; LBRACE; option(BAR); cases = separated_nonempty_list(BAR, match_case); RBRACE
     { Ast_helper.Exp.match_ ~loc:(mkloc $startpos $endpos) e cases }
@@ -1030,6 +1036,14 @@ app_pattern:
   | p = simple_pattern { p }
 
 simple_pattern:
+  | p = param_pattern { p }
+  (* `{ name = n; age }`: a field alone binds a variable of the same name. *)
+  | LBRACE; fields = separated_nonempty_list(SEMICOLON, field_pattern); RBRACE
+    { Ast_helper.Pat.record ~loc:(mkloc $startpos $endpos) fields Open }
+
+(* A [simple_pattern] but a bare record, which can't start a parameter (see
+   [fn_params]). *)
+param_pattern:
   | x = IDENT
     { let loc = mkloc $startpos $endpos in
       if x = "_" then Ast_helper.Pat.any ~loc ()
@@ -1066,9 +1080,6 @@ simple_pattern:
       List.fold_right
         (fun p acc -> ctor "::" (Some ([], Ast_helper.Pat.tuple ~loc [ (None, p); (None, acc) ] Closed)))
         ps (ctor "[]" None) }
-  (* `{ name = n; age }`: a field alone binds a variable of the same name. *)
-  | LBRACE; fields = separated_nonempty_list(SEMICOLON, field_pattern); RBRACE
-    { Ast_helper.Pat.record ~loc:(mkloc $startpos $endpos) fields Open }
 
 field_pattern:
   | f = IDENT; p = option(preceded(EQ, pattern))
