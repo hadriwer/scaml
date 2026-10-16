@@ -41,27 +41,75 @@ impl foldable of btree {
 }
 
 impl iterable of btree {
-    fn iter f t { fold_left (^u v -> f v) () t }
+    fn iter f t {
+        fn go t {
+            match t {
+                | Leaf -> ()
+                | Node (l, v, r) -> { go l; f v; go r }
+            }
+        }
+        go t
+    }
     fn iteri f t {
-        let _ = fold_left (^i v -> { f i v; i + 1 }) 0 t;
+        // the index of the next node, in order
+        fn go i t {
+            match t {
+                | Leaf -> i
+                | Node (l, v, r) -> { let j = go i l; f j v; go (j + 1) r }
+            }
+        }
+        let _ = go 0 t;
         ()
     }
 }
 
-
-fn btree_print_aux pr pre t {
-    let _ = String.length pre;
+// left subtree, right subtree, node
+fn postfix_order bt {
+  fn go t acc {
     match t {
-        | Leaf -> println "leaf"
-        | Node (l, x, r) -> {
-            pr x;
-            print (pre + "├── "); btree_print_aux pr (pre + "│   ") l;
-            print (pre + "└── "); btree_print_aux pr (pre + "    ") r
-        }
+      | Leaf -> acc
+      | Node (l, x, r) -> go l (go r (x :: acc))
     }
+  }
+  go bt []
+}
+
+// node, left subtree, right subtree
+fn prefix_order bt {
+  fn go t acc {
+    match t {
+      | Leaf -> acc
+      | Node (l, x, r) -> x :: go l (go r acc)
+    }
+  }
+  go bt []
+}
+
+// left subtree, node, right subtree
+fn infix_order bt {
+  fn go t acc {
+    match t {
+      | Leaf -> acc
+      | Node (l, x, r) -> go l (x :: go r acc)
+    }
+  }
+  go bt []
 }
 
 impl showable of btree {
-    fn print t { btree_print_aux (^x -> println x) "" t }
+    fn print t {
+      fn go pr pre t {
+        match t {
+          | Leaf -> println "leaf"
+          | Node (l, x, r) -> {
+              pr x;
+              print pre; print "├── "; go pr (pre + "│   ") l;
+              print pre; print "└── "; go pr (pre + "    ") r
+          }
+        }
+      }
+      go (^x -> println x) "" t
+    }
+
     fn println t { print t }
 }

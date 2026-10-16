@@ -59,6 +59,10 @@ syntax and the standard library may still change between minor versions.
   `sin pi |> is_close 0.` holds).
 - Slicing a string with a range (`s[a..b]`, `s[(a..b) + 2]`) takes linear
   time (`String.sub` for a step of 1), instead of building it char by char.
+- Binary trees (`btree`) move out of the core library to
+  `stdlib/btree.scaml` (`#use "stdlib/btree.scaml"`), with
+  `infix_order`, `prefix_order`, `postfix_order` (in linear time), `iter`,
+  `iteri` and `println` (drawn as a tree).
 - `stdlib/hashmap.scaml` (`#use "stdlib/hashmap.scaml"`): hash maps
   (`Hashtbl.t`), `hashmap_of_list`, `get`, `insert`, `update`, `keys`,
   `entries`..., `hm[k]`, `hm[k] = v`, `hm[k] += v` for any key type,

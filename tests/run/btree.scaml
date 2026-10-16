@@ -1,0 +1,18 @@
+#use "stdlib/btree.scaml"
+
+// left comb: every node has only a left child (the worst case for `@`)
+fn comb n { fold_left (^t i -> Node (t, i, Leaf)) Leaf (0..n) }
+
+fn main {
+  let t = Node (Node (Leaf, 1, Leaf), 2, Node (Node (Leaf, 4, Leaf), 3, Leaf));
+  println t;
+  println (sum 0 t);
+  println (postfix_order t);
+  println (prefix_order t);
+  println (infix_order t);
+  iteri (^i v -> { print i; print ":"; print v; print " " }) t;
+  println "";
+
+  let c = comb 100000;
+  println (List.length (infix_order c), List.hd (prefix_order c), List.hd (postfix_order c));
+}
