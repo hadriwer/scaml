@@ -1,0 +1,102 @@
+// Building
+
+fn make_hashmap n {
+  Hashtbl.create n
+}
+
+fn fill_hashmap hm l {
+  iter (^(k, v) -> Hashtbl.replace hm k v) l;
+}
+
+fn init_hashmap n l {
+  let tbl = Hashtbl.create n;
+  fill_hashmap tbl l;
+  tbl
+}
+
+fn hashmap_of_list l {
+  init_hashmap (len l) l
+}
+
+// Access
+
+fn insert hm k v { Hashtbl.replace hm k v }
+
+fn get hm k { Hashtbl.find_opt hm k }
+
+fn get_or hm k default {
+  match Hashtbl.find_opt hm k {
+    Some v -> v
+    | None -> default
+  }
+}
+
+fn contains_key hm k { Hashtbl.mem hm k }
+
+fn remove hm k { Hashtbl.remove hm k }
+
+fn update hm k default f {
+  Hashtbl.replace hm k (f (get_or hm k default))
+}
+
+fn clear hm { Hashtbl.reset hm }
+
+// Contents (in no particular order)
+
+fn keys hm { Hashtbl.fold (^k v acc -> k :: acc) hm [] }
+
+fn values hm { Hashtbl.fold (^k v acc -> v :: acc) hm [] }
+
+fn entries hm { fold_left (^acc kv -> kv :: acc) [] hm }
+
+// Traits
+
+impl iterable of (k, v) Hashtbl.t {
+  type a = (k, v)
+  fn iter f hm { Hashtbl.iter (^k v -> f (k, v)) hm }
+  fn iteri f hm { ignore (Hashtbl.fold (^k v i -> { f i (k, v); i + 1 }) hm 0) }
+}
+
+impl foldable of (k, v) Hashtbl.t {
+  type a = (k, v)
+  fn fold_left f acc hm { Hashtbl.fold (^k v acc -> f acc (k, v)) hm acc }
+  fn fold_right f hm acc { Hashtbl.fold (^k v acc -> f (k, v) acc) hm acc }
+}
+
+impl quantifiable of (k, v) Hashtbl.t {
+  type a = (k, v)
+  fn forall p hm { Hashtbl.fold (^k v ok -> ok && p (k, v)) hm true }
+  fn exists p hm { Hashtbl.fold (^k v ok -> ok || p (k, v)) hm false }
+}
+
+impl showable of (k, v) Hashtbl.t {
+  fn print hm {
+    print "{ ";
+    ignore (Hashtbl.fold (^k v first -> {
+      if not first then print "; " else ();
+      print k; print ": "; print v;
+      false
+    }) hm true);
+    print " }"
+  }
+
+  fn println hm { print hm; println "" }
+}
+
+impl sizable of Hashtbl.t {
+  fn len { Hashtbl.length }
+}
+
+impl concetanable of Hashtbl.t {
+  op @ hm1 hm2 {
+    let res = Hashtbl.copy hm1;
+    Hashtbl.iter (^k v -> Hashtbl.replace res k v) hm2;
+    res
+  }
+}
+
+impl indexable of Hashtbl.t, _ {
+  op [] { Hashtbl.find }
+  op []= { Hashtbl.replace }
+  op []+= hm k v { hm[k] = hm[k] + v }
+}

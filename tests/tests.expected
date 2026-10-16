@@ -82,6 +82,31 @@ size: 100
 0
 boom
 -1
+=== run/hashmap.scaml
+11
+None
+0
+true
+[ ("a", 11); ("b", 200); ("c", 3); ("n", 1) ]
+3
+[ "a"; "b"; "n"; "q" ]
+[ 0; 1; 7; 200 ]
+212
+[ "a"; "b"; "n" ]
+true
+false
+212
+3
+{ 1: 'x' }
+[| { 1: 'x' } |]
+({ 1: 'x' }, "s")
+<1, "a">
+[ <{ 1: 'x' }, 2.5> ]
+2.5
+tuple
+4
+trois
+0
 === run/index_ops.scaml
 [| 11; 5; 3 |]
 103
@@ -122,6 +147,12 @@ true
  9  16  25
 36  49  64
 
+=== run/module_types.scaml
+2
+2
+3
+buf
+2
 === run/optional.scaml
 3
 3
@@ -193,6 +224,10 @@ None
 int 5
 point 1,2
 b
+=== errors/impl_one_param_dict.scaml
+File "errors/impl_one_param_dict.scaml", lines 1-4, characters 0-1:
+Error: This impl uses trait `showable` on its parameter `k` only: with several parameters, it must use one on each of them
+exit 1
 === errors/no_impl.scaml
 File "errors/no_impl.scaml", line 3, characters 13-16:
 Error: No impl of `[]` (trait `indexable`) for list, int

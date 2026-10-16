@@ -1,0 +1,30 @@
+// Types from OCaml modules (#15): impls of Hashtbl.t / Buffer.t, and a
+// two-parameter one in a type, (string, int) Hashtbl.t
+impl sizable of Hashtbl.t {
+  fn len { Hashtbl.length }
+}
+
+impl indexable of Hashtbl.t, string {
+  op [] { Hashtbl.find }
+  op []= { Hashtbl.replace }
+}
+
+impl showable of Buffer.t {
+  fn print b { print (Buffer.contents b) }
+  fn println b { println (Buffer.contents b) }
+}
+
+type wrap { W of (string, int) Hashtbl.t }
+
+fn main {
+  let h = Hashtbl.create 4;
+  h["a"] = 1;
+  h["b"] = 2;
+  println (len h);
+  println h["b"];
+  println (len [1; 2; 3]);
+  let b = Buffer.create 8;
+  Buffer.add_string b "buf";
+  println b;
+  match W h { W t -> println (len t) }
+}

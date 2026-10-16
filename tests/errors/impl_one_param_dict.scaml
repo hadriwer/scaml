@@ -1,0 +1,10 @@
+impl showable of (k, v) Hashtbl.t {
+  fn print h { Hashtbl.iter (^k v -> print k) h }
+  fn println h { print h; println "" }
+}
+
+fn main {
+  let h = Hashtbl.create 1;
+  Hashtbl.add h 1 2;
+  println h
+}

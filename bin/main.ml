@@ -311,18 +311,71 @@ let ty_name (Ty (n, _)) = n
    Filled once from the full structure before dispatch starts. *)
 let user_type_names : (string, unit) Hashtbl.t = Hashtbl.create 16
 
+(* Types from OCaml modules that some impl targets (`impl showable of
+   Hashtbl.t`), encoded (see lib/type_name.ml): found in the names of the
+   impl modules and overloads generated for them. *)
+let qualified_type_names : (string, unit) Hashtbl.t = Hashtbl.create 16
+
+(* Each generic impl's functor parameter fields, in the order of its type's
+   own parameters (`[ "__elem0__" ]` for `showable of array`, `[ "k"; "v"
+   ]` for `iterable of (k, v) Hashtbl.t`): what a call site must give. *)
+let impl_functor_params : (string, string list) Hashtbl.t = Hashtbl.create 16
+
+(* An impl with several parameters, which can need a dictionary for each
+   (see [upgrade_dict_impls]). *)
+let is_multi_impl mod_name =
+  match Hashtbl.find_opt impl_functor_params mod_name with
+  | Some (_ :: _ :: _) -> true
+  | _ -> false
+
+(* ...and needs one for every parameter, as [reqs] (field, trait) says. *)
+let multi_complete mod_name reqs =
+  is_multi_impl mod_name
+  && List.for_all (fun p -> List.mem_assoc p reqs) (Hashtbl.find impl_functor_params mod_name)
+
+(* The functor parameter holding parameter [field]'s dictionary, in such an
+   impl. *)
+let multi_dict_param field = "X__" ^ field
+
 let collect_user_type_names (structure : Parsetree.structure) =
+  (* `Showable__Hashtbl't` -> [ "Showable"; "Hashtbl't" ] *)
+  let rec parts s =
+    let n = String.length s in
+    let rec find i = if i + 1 >= n then None else if s.[i] = '_' && s.[i + 1] = '_' then Some i else find (i + 1) in
+    match find 0 with
+    | Some j -> String.sub s 0 j :: parts (String.sub s (j + 2) (n - j - 2))
+    | None -> [ s ]
+  in
+  let add_qualified name =
+    List.iter
+      (fun part -> if SCaml.Type_name.is_qualified part then Hashtbl.replace qualified_type_names part ())
+      (parts name)
+  in
   List.iter
     (fun (item : Parsetree.structure_item) ->
       match item.pstr_desc with
       | Pstr_type (_, decls) ->
         List.iter (fun (d : Parsetree.type_declaration) -> Hashtbl.replace user_type_names d.ptype_name.txt ()) decls
+      | Pstr_module { pmb_name = { txt = Some name; _ }; pmb_expr; _ } ->
+        add_qualified name;
+        (match pmb_expr.pmod_desc with
+         | Pmod_functor (Named (_, { pmty_desc = Pmty_signature sigs; _ }), _) ->
+           Hashtbl.replace impl_functor_params name
+             (List.concat_map
+                (fun (si : Parsetree.signature_item) ->
+                  match si.psig_desc with
+                  | Psig_type (_, ds) -> List.map (fun (d : Parsetree.type_declaration) -> d.ptype_name.txt) ds
+                  | _ -> [])
+                sigs)
+         | _ -> ())
+      | Pstr_value (_, [ { pvb_pat = { ppat_desc = Ppat_var { txt; _ }; _ }; _ } ]) -> add_qualified txt
       | _ -> ())
     structure
 
 let known_type_name (path : Path.t) =
   match path with
   | Path.Pident id when Hashtbl.mem user_type_names (Ident.name id) -> Some (Ident.name id)
+  | Path.Pdot _ when Hashtbl.mem qualified_type_names (SCaml.Type_name.of_path path) -> Some (SCaml.Type_name.of_path path)
   | _ ->
   if Path.same path Predef.path_int then Some "int"
   else if Path.same path Predef.path_string then Some "string"
@@ -711,7 +764,7 @@ type concrete_ref =
 let rec core_of_tree loc (Ty (n, args)) : Parsetree.core_type =
   let args = List.map (core_of_tree loc) args in
   if String.length n > 5 && String.sub n 0 5 = "tuple" then Ast_helper.Typ.tuple ~loc (List.map (fun t -> (None, t)) args)
-  else Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident n) loc) args
+  else Ast_helper.Typ.constr ~loc (Location.mkloc (SCaml.Type_name.lid n) loc) args
 
 (* The argument a functor-shaped impl is applied to at a call site: either a
    fresh anonymous struct binding each "other" type field (the common
@@ -738,7 +791,9 @@ type functor_arg =
 type dispatch_target =
   | Plain of string
   | Functored of string * functor_arg
-  | ViaDictParam of string
+  (* The dictionary module, `X` (or `X__k`, see [upgrade_dict_impls]), and
+     the method. *)
+  | ViaDictParam of string * string
   | Overload of string
   (* A whole dictionary built at the call site, e.g. `Showable__tuple2
      (Showable__string) (Showable__int)` for `println ("a", 1)`. *)
@@ -788,7 +843,7 @@ let harvest_dispatch
     (abstract_types : (string, string list) Hashtbl.t)
     (ctor_methods : (string, ctor_method) Hashtbl.t)
     (overloads : (string, string list * string) Hashtbl.t)
-    (prior_dict_requirements : (string, string * string) Hashtbl.t)
+    (prior_dict_requirements : (string, (string * string) list) Hashtbl.t)
     (typed : Typedtree.structure) =
   let trait_of_name = Hashtbl.create 16 in
   let arity_of_name = Hashtbl.create 16 in
@@ -811,7 +866,7 @@ let harvest_dispatch
      accordingly) and, right below, by this same function's own handling of
      *external* call sites dispatching to that impl (which must then pass
      an existing impl module as the functor argument, not a bare struct). *)
-  let dict_requirements : (string, string * string) Hashtbl.t = Hashtbl.copy prior_dict_requirements in
+  let dict_requirements : (string, (string * string) list) Hashtbl.t = Hashtbl.copy prior_dict_requirements in
   (* Overloaded calls whose argument types are all known but match no impl:
      location, trait, those types. *)
   let overload_misses : (Location.t * string * string * string list) list ref = ref [] in
@@ -819,7 +874,22 @@ let harvest_dispatch
      rewritten and upgraded (its `X.__elem0__` renamed to `X.a`), and must
      not re-record its requirement under that new name. *)
   let add_dict_requirement mod_name req =
-    if not (Hashtbl.mem dict_requirements mod_name) then Hashtbl.replace dict_requirements mod_name req
+    match Hashtbl.find_opt dict_requirements mod_name with
+    | None -> Hashtbl.replace dict_requirements mod_name [ req ]
+    (* An impl with several parameters (`showable of (k, v) Hashtbl.t`)
+       can need one per parameter. *)
+    | Some reqs when is_multi_impl mod_name && not (List.mem_assoc (fst req) reqs) ->
+      Hashtbl.replace dict_requirements mod_name (reqs @ [ req ])
+    | Some _ -> ()
+  in
+  (* The traits the dictionaries passed to impl [m] for its [n] type
+     arguments must satisfy: each its own, for an impl needing one per
+     parameter, or else the one its element needs ([default] if none). *)
+  let arg_traits m default n =
+    match Hashtbl.find_opt dict_requirements m with
+    | Some reqs when multi_complete m reqs -> List.map (fun p -> List.assoc p reqs) (Hashtbl.find impl_functor_params m)
+    | Some ((_, t) :: _) -> List.init n (fun _ -> t)
+    | _ -> List.init n (fun _ -> default)
   in
   let other_names_of trait_name =
     match Hashtbl.find_opt abstract_types trait_name with
@@ -864,6 +934,13 @@ let harvest_dispatch
      inside its own body. *)
   let current_impl_module = ref None in
   let target_is_self mod_name = !current_impl_module = Some mod_name in
+  (* The functor parameter a value of type `X.<field>` takes its
+     dictionary from, in the impl being walked. *)
+  let dict_param field =
+    match !current_impl_module with
+    | Some m when is_multi_impl m -> multi_dict_param field
+    | _ -> "X"
+  in
   (* A call on a type with no impl (e.g. `println p` for a user type
      without `impl showable`) is left alone, so it fails as an unresolved
      trait call, reported at the call (see [trait_calls]), rather than as
@@ -927,7 +1004,7 @@ let harvest_dispatch
                  | _ -> false
                in
                if List.exists is_callback_var dispatch_args2 then begin
-                 Hashtbl.replace table (loc_key head2.exp_loc) (ViaDictParam name2);
+                 Hashtbl.replace table (loc_key head2.exp_loc) (ViaDictParam (dict_param field, name2));
                  match !current_impl_module with
                  | Some mod_name2 -> add_dict_requirement mod_name2 (field, trait_name2)
                  | None -> ()
@@ -960,7 +1037,11 @@ let harvest_dispatch
     let other_names = other_names_of trait_name in
     let arg_type_names = List.map ty_name arg_trees in
     let mod_name = impl_module_name trait_name type_name in
-    let params = all_param_names other_names (List.length arg_type_names) in
+    let params =
+      match Hashtbl.find_opt impl_functor_params mod_name with
+      | Some ps -> ps
+      | None -> all_param_names other_names (List.length arg_type_names)
+    in
     (* A "free" other name (e.g. `foldable`'s `acc`) isn't part
        of the self type's own structure: impls are polymorphic in
        it (see lib/parser.mly's IMPL rule), so it's never passed
@@ -1012,18 +1093,17 @@ let harvest_dispatch
            own element needs, rather than passing it bare. *)
         let rec dict_of needed_trait (Ty (n, args)) =
           let dict_mod = impl_module_name needed_trait n in
-          let sub_trait =
-            match Hashtbl.find_opt dict_requirements dict_mod with
-            | Some (_, t) -> t
-            | None -> needed_trait
-          in
-          Dict (dict_mod, List.map (dict_of sub_trait) args)
+          Dict (dict_mod, List.map2 dict_of (arg_traits dict_mod needed_trait (List.length args)) args)
         in
         (match full_fields, Hashtbl.find_opt dict_requirements mod_name, arg_trees with
-         | [ (only_field, (Concrete _ | ConcreteTree _)) ], Some (dict_field, needed_trait), [ elem_tree ]
+         (* One dictionary per parameter: `Showable__Hashtbl't
+            (Showable__string) (Showable__int)`. *)
+         | _, Some reqs, _ when multi_complete mod_name reqs ->
+           Some (DictCall (Dict (mod_name, List.map2 dict_of (arg_traits mod_name trait_name (List.length arg_trees)) arg_trees)))
+         | [ (only_field, (Concrete _ | ConcreteTree _)) ], Some [ (dict_field, needed_trait) ], [ elem_tree ]
            when dict_field = only_field ->
            Some (Functored (mod_name, DictModule (dict_of needed_trait elem_tree)))
-         | [ (only_field, Concrete concrete_type) ], Some (dict_field, needed_trait), _ when dict_field = only_field ->
+         | [ (only_field, Concrete concrete_type) ], Some [ (dict_field, needed_trait) ], _ when dict_field = only_field ->
            Some (Functored (mod_name, DictModule (Dict (impl_module_name needed_trait concrete_type, []))))
          | _ -> Some (Functored (mod_name, FieldStruct full_fields)))
       else Some (Plain mod_name)
@@ -1071,16 +1151,41 @@ let harvest_dispatch
       let n = List.length tys in
       if List.length arg_tys < n then None
       else
-        let heads = List.map (fun (env, ty) -> head_type_name env (strip_tpoly ty)) (List.filteri (fun i _ -> i < n) arg_tys) in
-        if List.exists Option.is_none heads then None
+        (* Each argument's type: named (`int`, `array`), still unknown (a
+           type variable), or known but not by a name an overload can list
+           (a tuple, a function...), which only a `_` matches. *)
+        let heads =
+          List.map
+            (fun (env, ty) ->
+              let ty = strip_tpoly ty in
+              match head_type_name env ty, Types.get_desc (Ctype.expand_head env ty) with
+              | Some n, _ -> `Named n
+              | None, Tvar _ -> `Unknown
+              | None, _ -> `Unnamed (Format.asprintf "%a" Printtyp.type_expr ty))
+            (List.filteri (fun i _ -> i < n) arg_tys)
+        in
+        let is_wildcard ty = ty = SCaml.Type_name.wildcard in
+        (* An unknown type some overload names at its position: wait. *)
+        let must_wait =
+          List.exists
+            (fun (tys, _) -> List.exists2 (fun ty h -> h = `Unknown && not (is_wildcard ty)) tys heads)
+            candidates
+        in
+        if must_wait then None
         else
-          let heads = List.map Option.get heads in
-          match List.find_map (fun (tys, fname) -> if tys = heads then Some (Overload fname) else None) candidates with
-          | Some t -> Some t
-          | None ->
+          let matches (tys, _) =
+            List.for_all2 (fun ty h -> is_wildcard ty || h = `Named ty) tys heads
+          in
+          (* The most specific one: `Hashtbl.t, range` before `Hashtbl.t, _`. *)
+          let wildcards (tys, _) = List.length (List.filter is_wildcard tys) in
+          match List.sort (fun a b -> compare (wildcards a) (wildcards b)) (List.filter matches candidates) with
+          | (_, fname) :: _ -> Some (Overload fname)
+          | [] when List.mem `Unknown heads -> None
+          | [] ->
             (* Every type is known and still nothing matches: that's final. *)
             let trait_name = Option.value ~default:"?" (Hashtbl.find_opt trait_of_name name) in
-            overload_misses := (loc, trait_name, name, heads) :: !overload_misses;
+            let shown = List.map (function `Named n -> n | `Unnamed t -> t | `Unknown -> "_") heads in
+            overload_misses := (loc, trait_name, name, shown) :: !overload_misses;
             None
   in
   let expr (iter : Tast_iterator.iterator) (e : Typedtree.expression) =
@@ -1183,8 +1288,7 @@ let harvest_dispatch
                    of arrays or of tuples works too). *)
                 let rec dict_for trait (Ty (n, args)) =
                   let m = impl_module_name trait n in
-                  let sub = match Hashtbl.find_opt dict_requirements m with Some (_, t) -> t | None -> trait in
-                  Dict (m, List.map (dict_for sub) args)
+                  Dict (m, List.map2 dict_for (arg_traits m trait (List.length args)) args)
                 in
                 Hashtbl.replace table (loc_key head.exp_loc) (DictCall (dict_for trait_name (Ty (type_name, arg_trees))))
               | `Concrete (type_name, arg_trees) ->
@@ -1241,8 +1345,7 @@ let harvest_dispatch
                    which [upgrade_dict_impls] then turns into that trait. *)
                 let rec dict_for trait (Ty (n, args)) =
                   let m = impl_module_name trait n in
-                  let sub = match Hashtbl.find_opt dict_requirements m with Some (_, t) -> t | None -> trait in
-                  Dict (m, List.map (dict_for sub) args)
+                  Dict (m, List.map2 dict_for (arg_traits m trait (List.length args)) args)
                 in
                 let comp_dicts =
                   List.map
@@ -1252,7 +1355,7 @@ let harvest_dispatch
                         (match !current_impl_module with
                          | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
                          | None -> ());
-                        Dict ("X", []))
+                        Dict (dict_param field, []))
                     comps
                 in
                 Hashtbl.replace table (loc_key head.exp_loc)
@@ -1263,7 +1366,7 @@ let harvest_dispatch
                    impl's own abstract padding field: needs a value, not
                    just a type, so defer straight through that functor
                    parameter ("X") rather than to any named impl module. *)
-                Hashtbl.replace table (loc_key head.exp_loc) (ViaDictParam name);
+                Hashtbl.replace table (loc_key head.exp_loc) (ViaDictParam (dict_param field, name));
                 (match !current_impl_module with
                  | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
                  | None -> ())
@@ -1271,7 +1374,7 @@ let harvest_dispatch
                 let mod_name = impl_module_name trait_name base in
                 if not (target_is_self mod_name) then
                   (match Hashtbl.find_opt dict_requirements mod_name with
-                   | Some (_, needed_trait) ->
+                   | Some ((_, needed_trait) :: _) ->
                      (* That impl needs a value from its element (e.g.
                         `showable of array` printing each one): pass the
                         element's own dictionary, built down to the
@@ -1284,14 +1387,13 @@ let harvest_dispatch
                          (match !current_impl_module with
                           | Some m -> add_dict_requirement m (field, trait)
                           | None -> ());
-                         Dict ("X", [])
+                         Dict (dict_param field, [])
                        | XCon (n, args) ->
                          let m = impl_module_name trait n in
-                         let sub = match Hashtbl.find_opt dict_requirements m with Some (_, t) -> t | None -> trait in
-                         Dict (m, List.map (dict_for sub) args)
+                         Dict (m, List.map2 dict_for (arg_traits m trait (List.length args)) args)
                      in
                      Hashtbl.replace table (loc_key head.exp_loc) (Functored (mod_name, DictModule (dict_for needed_trait elem)))
-                   | None ->
+                   | Some [] | None ->
                      (match all_param_names other_names 1 with
                       | [ only_field ] ->
                         Hashtbl.replace table (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaXTree elem) ]))
@@ -1327,7 +1429,7 @@ let harvest_dispatch
                                let name2 = Longident.last lid2.txt in
                                (match Hashtbl.find_opt trait_of_name name2 with
                                 | Some trait_name2 when not (Hashtbl.mem overloads name2) ->
-                                  Hashtbl.replace table (loc_key callback_arg.exp_loc) (ViaDictParam name2);
+                                  Hashtbl.replace table (loc_key callback_arg.exp_loc) (ViaDictParam (dict_param field, name2));
                                   (match !current_impl_module with
                                    | Some mod_name2 -> add_dict_requirement mod_name2 (field, trait_name2)
                                    | None -> ())
@@ -1385,7 +1487,7 @@ let harvest_dispatch
                     | Tconstr (path, [], _) ->
                       (match path_is_x_field path with
                        | Some field ->
-                         Hashtbl.replace table (loc_key e.exp_loc) (ViaDictParam name);
+                         Hashtbl.replace table (loc_key e.exp_loc) (ViaDictParam (dict_param field, name));
                          (match !current_impl_module with
                           | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
                           | None -> ())
@@ -1484,8 +1586,8 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
        | Some (Plain mod_name) ->
          let qualified = Option.get (Longident.unflatten [ mod_name; name ]) in
          { e with pexp_desc = Pexp_ident (Location.mkloc qualified e.pexp_loc) }
-       | Some (ViaDictParam method_name) ->
-         let qualified = Option.get (Longident.unflatten [ "X"; method_name ]) in
+       | Some (ViaDictParam (dict_mod, method_name)) ->
+         let qualified = Option.get (Longident.unflatten [ dict_mod; method_name ]) in
          { e with pexp_desc = Pexp_ident (Location.mkloc qualified e.pexp_loc) }
        | Some (Overload fname) -> { e with pexp_desc = Pexp_ident (Location.mkloc (Longident.Lident fname) e.pexp_loc) }
        | Some (Absurd n) ->
@@ -1513,7 +1615,7 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
                   (fun (field_name, cref) ->
                     let manifest =
                       match cref with
-                      | Concrete type_name -> Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident type_name) loc) []
+                      | Concrete type_name -> Ast_helper.Typ.constr ~loc (Location.mkloc (SCaml.Type_name.lid type_name) loc) []
                       | ViaX field ->
                         Ast_helper.Typ.constr ~loc
                           (Location.mkloc (Longident.Ldot (Location.mkloc (Longident.Lident "X") loc, Location.mkloc field loc)) loc)
@@ -1527,7 +1629,7 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
                               []
                           | XCon (n, args) when String.length n > 5 && String.sub n 0 5 = "tuple" ->
                             Ast_helper.Typ.tuple ~loc (List.map (fun t -> (None, core t)) args)
-                          | XCon (n, args) -> Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident n) loc) (List.map core args)
+                          | XCon (n, args) -> Ast_helper.Typ.constr ~loc (Location.mkloc (SCaml.Type_name.lid n) loc) (List.map core args)
                         in
                         core tree
                     in
@@ -1564,7 +1666,7 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
    the concrete impl module itself (e.g. `Showable__int`) as the whole
    functor argument instead of an anonymous struct. *)
 let upgrade_dict_impls
-    (dict_requirements : (string, string * string) Hashtbl.t)
+    (dict_requirements : (string, (string * string) list) Hashtbl.t)
     (abstract_types : (string, string list) Hashtbl.t)
     (structure : Parsetree.structure) : Parsetree.structure =
   if Hashtbl.length dict_requirements = 0 then structure
@@ -1574,14 +1676,17 @@ let upgrade_dict_impls
       | Some all -> (match List.rev all with last :: _ -> last | [] -> "a")
       | None -> "a"
     in
-    let rename_field old_field new_field =
+    (* `X.<old_field>` -> `<new_mod>.<new_field>`. *)
+    let rename_fields (renames : (string * (string * string)) list) =
       let typ (mapper : Ast_mapper.mapper) (t : Parsetree.core_type) =
         match t.ptyp_desc with
-        | Ptyp_constr ({ txt = Longident.Ldot ({ txt = Longident.Lident "X"; _ }, { txt = f; _ }); loc }, args) when f = old_field ->
+        | Ptyp_constr ({ txt = Longident.Ldot ({ txt = Longident.Lident "X"; _ }, { txt = f; _ }); loc }, args)
+          when List.mem_assoc f renames ->
+          let new_mod, new_field = List.assoc f renames in
           { t with
             ptyp_desc =
               Ptyp_constr
-                (Location.mkloc (Longident.Ldot (Location.mkloc (Longident.Lident "X") loc, Location.mkloc new_field loc)) loc, args)
+                (Location.mkloc (Longident.Ldot (Location.mkloc (Longident.Lident new_mod) loc, Location.mkloc new_field loc)) loc, args)
           }
         | _ -> Ast_mapper.default_mapper.typ mapper t
       in
@@ -1591,9 +1696,36 @@ let upgrade_dict_impls
       match item.pstr_desc with
       | Pstr_module ({ pmb_name = { txt = Some mod_name; _ }; pmb_expr; _ } as mb) ->
         (match Hashtbl.find_opt dict_requirements mod_name, pmb_expr.pmod_desc with
-         | Some (field, needed_trait), Pmod_functor (Named (x_name, _old_sig), body) ->
+         (* One dictionary per parameter, each its own functor parameter,
+            like the tuple impls: `showable of (k, v) Hashtbl.t` becomes
+            `functor (X__k : showable) (X__v : showable) -> ...`, its
+            `X.k` now `X__k.a`. (Only once: [Pmty_signature] is the
+            original, never upgraded, parameter.) *)
+         | Some reqs, Pmod_functor (Named ({ txt = Some "X"; _ }, { pmty_desc = Pmty_signature _; _ }), body)
+           when multi_complete mod_name reqs ->
+           let loc = pmb_expr.pmod_loc in
+           let params = Hashtbl.find impl_functor_params mod_name in
+           let mapper =
+             rename_fields (List.map (fun p -> (p, (multi_dict_param p, self_name_of (List.assoc p reqs)))) params)
+           in
+           let renamed_body = mapper.Ast_mapper.module_expr mapper body in
+           let new_mod_expr =
+             List.fold_right
+               (fun p acc ->
+                 Ast_helper.Mod.functor_ ~loc
+                   (Named (Location.mkloc (Some (multi_dict_param p)) loc,
+                           Ast_helper.Mty.ident ~loc (Location.mkloc (Longident.Lident (List.assoc p reqs)) loc)))
+                   acc)
+               params renamed_body
+           in
+           { item with pstr_desc = Pstr_module { mb with pmb_expr = new_mod_expr } }
+         | Some reqs, Pmod_functor _ when is_multi_impl mod_name && not (multi_complete mod_name reqs) ->
+           let p, t = List.hd reqs in
+           raise (Location.Error (Location.error ~loc:pmb_expr.pmod_loc
+             (Printf.sprintf "This impl uses trait `%s` on its parameter `%s` only: with several parameters, it must use one on each of them" t p)))
+         | Some ((field, needed_trait) :: _), Pmod_functor (Named (x_name, _old_sig), body) ->
            let new_self = self_name_of needed_trait in
-           let mapper = rename_field field new_self in
+           let mapper = rename_fields [ (field, ("X", new_self)) ] in
            let renamed_body = mapper.Ast_mapper.module_expr mapper body in
            let new_sig =
              Ast_helper.Mty.ident ~loc:pmb_expr.pmod_loc (Location.mkloc (Longident.Lident needed_trait) pmb_expr.pmod_loc)
@@ -2691,6 +2823,7 @@ let () =
     (* The resolved structure, once it type-checked as a whole. *)
     let typechecked : Parsetree.structure option ref = ref None in
     let user_structure =
+      try
       if trait_methods = [] then user_structure
       else begin
         let abstract_types = collect_trait_abstract_types user_structure in
@@ -2794,6 +2927,10 @@ let () =
               | Error _ -> resolved
         end
       end
+      (* An impl the dispatch can't build (see [upgrade_dict_impls]). *)
+      with Location.Error _ as exn ->
+        Location.report_exception Format.err_formatter exn;
+        exit 1
     in
     let full_structure = (* prelude @ *) user_structure @ [ entry_point ] in
 
@@ -2842,5 +2979,5 @@ let () =
        Printf.eprintf "ocamlfind ocamlopt failed (exit %d)\n" code;
        exit 1)
   | _ ->
-    Printf.eprintf "Usage: %s [--tokens] [--verbose|-v] [--keep|-k] <file.scaml>\n       %s --version\n" Sys.argv.(0) Sys.argv.(0);
+    Printf.eprintf "Usage: %s [--tokens] [--verbose|-v] [--keep|-k] [--check-stdlib] <file.scaml>\n       %s --version\n" Sys.argv.(0) Sys.argv.(0);
     exit 1

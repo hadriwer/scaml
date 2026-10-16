@@ -1,0 +1,66 @@
+#use "stdlib/hashmap.scaml"
+
+// An impl naming its type's two parameters, each needing its own `showable`.
+type a b pair { P of a, b }
+
+impl showable of (x, y) pair {
+  fn print p { match p { P (x, y) -> { print "<"; print x; print ", "; print y; print ">" } } }
+  fn println p { print p; println "" }
+}
+
+fn main {
+  let hm = hashmap_of_list [("a", 1); ("b", 2)];
+  hm["c"] = 3;
+  hm["a"] += 10;
+  println hm["a"];
+  println (get hm "z");
+  println (get_or hm "z" 0);
+  println (contains_key hm "b");
+  update hm "b" 0 (^x -> x * 100);
+  update hm "n" 0 (^x -> x + 1);
+  println (List.sort compare (entries hm));
+  remove hm "c";
+  println (len hm);
+  let other = init_hashmap 4 [("a", 0); ("q", 7)];
+  let m = hm @ other;
+  println (List.sort compare (keys m));
+  println (List.sort compare (values m));
+
+  // iterable, foldable, quantifiable: on the (key, value) bindings
+  println (fold_left (^acc (k, v) -> acc + v) 0 hm);
+  println (List.sort compare (fold_right (^(k, v) acc -> k :: acc) hm []));
+  println (forall (^(k, v) -> v > 0) hm);
+  println (exists (^(k, v) -> k == "z") hm);
+  let total = [|0|];
+  iter (^(k, v) -> total[0] += v) hm;
+  println total[0];
+  let n = [|0|];
+  iteri (^i (k, v) -> n[0] += i) hm;
+  println n[0];
+
+  // showable, also nested
+  let one = hashmap_of_list [(1, 'x')];
+  println one;
+  println [|one|];
+  println (one, "s");
+  println (P (1, "a"));
+  println [P (one, 2.5)];
+
+  let ci = make_hashmap 4;
+  ci['x'] = 1.5;
+  ci['x'] += 1.;
+  println ci['x'];
+  // any key type (`indexable of Hashtbl.t, _`)
+  let t = make_hashmap 4;
+  t[(1, 2)] = "tuple";
+  println t[(1, 2)];
+  let l = make_hashmap 4;
+  l[[1; 2]] = 3;
+  l[[1; 2]] += 1;
+  println l[[1; 2]];
+  let ii = make_hashmap 4;
+  insert ii 3 "trois";
+  println ii[3];
+  clear hm;
+  println (len hm);
+}

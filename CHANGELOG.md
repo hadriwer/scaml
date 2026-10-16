@@ -7,6 +7,14 @@ syntax and the standard library may still change between minor versions.
 
 ### Language
 
+- An impl can name its type's parameters, to give the trait's types in
+  terms of them: `impl iterable of (k, v) Hashtbl.t { type a = (k, v) ..
+  }`. Such an impl can use a trait on each parameter (`showable of (k, v)
+  Hashtbl.t` printing keys and values): impls of types with several
+  parameters failed with "Unbound type constructor X.__elem1__".
+- `_` in an overloaded impl's types stands for any type: `impl indexable
+  of Hashtbl.t, _ { .. }`, for every key type (tuples included). An impl
+  naming the type (`impl indexable of Hashtbl.t, int`) takes precedence.
 - Optional arguments, as in OCaml, for `fn` (top-level and local): with a
   default value, `fn foo ?(x=0) y { .. }`, or as an option, `fn foo ?x y
   { .. }`. Passed by name, anywhere among the other arguments (`foo x=1 2`,
@@ -48,6 +56,11 @@ syntax and the standard library may still change between minor versions.
   `sin pi |> is_close 0.` holds).
 - Slicing a string with a range (`s[a..b]`, `s[(a..b) + 2]`) takes linear
   time (`String.sub` for a step of 1), instead of building it char by char.
+- `stdlib/hashmap.scaml` (`#use "stdlib/hashmap.scaml"`): hash maps
+  (`Hashtbl.t`), `hashmap_of_list`, `get`, `insert`, `update`, `keys`,
+  `entries`..., `hm[k]`, `hm[k] = v`, `hm[k] += v` for any key type,
+  `hm1 @ hm2`, `len`, `println hm`, and `iter`, `fold_left`, `forall`...
+  over its `(key, value)` bindings.
 
 ### Compiler
 
@@ -64,6 +77,10 @@ syntax and the standard library may still change between minor versions.
   can never run, no longer fails with "No impl of ...": e.g. `x + v` in
   `match u { Some x -> x + v | None -> .. }` when `u` is an optional
   argument left out (or `None`).
+- Types from OCaml modules can be written where a type is expected:
+  `impl sizable of Hashtbl.t`, `impl indexable of Hashtbl.t, string`, and
+  in a type, with several parameters as in OCaml: `W of (string, int)
+  Hashtbl.t` (#15).
 
 ## 0.1.0 (2026-10-12)
 
