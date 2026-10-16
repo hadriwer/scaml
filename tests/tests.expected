@@ -77,6 +77,49 @@ size: 100
 [ 20 ]
 3
 2
+=== run/determinize.scaml
+<Deterministic Finite Automaton : 
+Q = [| [ 0 ]; [ 0; 1 ]; [ 0; 2 ] |]
+Σ = [ "b"; "a" ]
+q₀ = [ 0 ]
+F = [ [ 0; 2 ] ]
+δ = 
+  [ 0 ] -a-> [ 0 ]
+  [ 0 ] -b-> [ 0; 1 ]
+  [ 0; 1 ] -a-> [ 0; 2 ]
+  [ 0; 1 ] -b-> [ 0; 1 ]
+  [ 0; 2 ] -a-> [ 0 ]
+  [ 0; 2 ] -b-> [ 0; 1 ]
+>
+abba -> true
+ba -> true
+ab -> false
+bab -> false
+ -> false
+<Deterministic Finite Automaton : 
+Q = [| [ "q0" ]; [ "q1"; "q2" ]; [ "q2" ]; [ "q2"; "q3" ] |]
+Σ = [ "c"; "b"; "a" ]
+q₀ = [ "q0" ]
+F = [ [ "q2"; "q3" ] ]
+δ = 
+  [ "q0" ] -a-> [ "q1"; "q2" ]
+  [ "q1"; "q2" ] -a-> [ "q2" ]
+  [ "q1"; "q2" ] -b-> [ "q2"; "q3" ]
+  [ "q1"; "q2" ] -c-> [ "q2" ]
+  [ "q2" ] -a-> [ "q2" ]
+  [ "q2" ] -b-> [ "q2"; "q3" ]
+  [ "q2" ] -c-> [ "q2" ]
+  [ "q2"; "q3" ] -a-> [ "q2" ]
+  [ "q2"; "q3" ] -b-> [ "q2"; "q3" ]
+  [ "q2"; "q3" ] -c-> [ "q2" ]
+>
+ab -> true
+abab -> true
+acccb -> true
+abx -> false
+a -> false
+ba -> false
+init_dfa : two transitions from the same state by the letter "a", the automaton isn't deterministic: use determinize.
 === run/dfa.scaml
 <Deterministic Finite Automaton : 
 Q = [| 0; 1 |]
@@ -146,6 +189,10 @@ trois
 [| 12; 6; 4 |]
 [| 42; 6; 4 |]
 true
+=== run/local_generic.scaml
+[ 'a' ]
+(0, 2, [ (0, "a", 0) ])
+(0, 4, [ (2, "b", 2); (0, "b", 0); (0, "a", 0) ])
 === run/matrix.scaml
 0  1  2
 3  4  5
@@ -243,6 +290,24 @@ None
 12!
 3
 2.
+=== run/to_char.scaml
+a
+b
+z
+x
+y
+A
+q
+B
+[ 'H'; 'i' ]
+to_char : 300 is not a char code (0 to 255).
+ 
+to_char : the string must have exactly one char.
+ 
+to_char : unsupported on bool.
+ 
+to_char : unsupported on list.
+ 
 === run/types.scaml
 3
 3.
@@ -254,6 +319,12 @@ b
 === errors/impl_one_param_dict.scaml
 File "errors/impl_one_param_dict.scaml", lines 1-4, characters 0-1:
 Error: This impl uses trait `showable` on its parameter `k` only: with several parameters, it must use one on each of them
+exit 1
+=== errors/nested_clone_type_error.scaml
+File "errors/nested_clone_type_error.scaml", line 8, characters 19-28:
+Error: This call to `construct` does not type-check: its arguments have types string
+File "errors/nested_clone_type_error.scaml", line 4, characters 30-35:
+  in `construct`: This expression has type char but an expression was expected of type string
 exit 1
 === errors/no_impl.scaml
 File "errors/no_impl.scaml", line 3, characters 13-16:

@@ -1,0 +1,18 @@
+#use "stdlib/dfa.scaml"
+
+fn main {
+  // words over {a, b} ending with "ba"
+  let d = determinize 0 [2] [(0, "a", 0); (0, "b", 0); (0, "b", 1); (1, "a", 2)];
+  println d;
+  iter (^w -> { print w; print " -> "; println (match_pattern d w) }) ["abba"; "ba"; "ab"; "bab"; ""];
+
+  // "a.*b" as an NFA with ε: 0 -a-> 1, 1 -ε-> 2, 2 -any-> 2, 2 -b-> 3
+  let letters = ["a"; "b"; "c"];
+  let nfa = [("q0", "a", "q1"); ("q1", "", "q2"); ("q2", "b", "q3")] @ map (^x -> ("q2", x, "q2")) letters;
+  let r = determinize "q0" ["q3"] nfa;
+  println r;
+  iter (^w -> { print w; print " -> "; println (match_pattern r w) }) ["ab"; "abab"; "acccb"; "abx"; "a"; "ba"];
+
+  // init_dfa refuses a nondeterministic automaton
+  println (try { ignore (init_dfa 0 [1] [(0, "a", 0); (0, "a", 1)]); "accepted" } with { Failure m -> m });
+}

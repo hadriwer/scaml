@@ -82,18 +82,25 @@ trait conversionnable {
     fn to_int       of      a -> int
     fn to_float     of      a -> float
     fn to_string    of      a -> string
+    fn to_char      of      a -> char
 }
 
 impl conversionnable of int {
     fn to_int { Fun.id }
     fn to_float { scaml_float_of_int }
     fn to_string { string_of_int }
+    // The char of that code: `to_char 97` is 'a'.
+    fn to_char i {
+        try Char.chr i
+        with { | Invalid_argument _ -> failwith (scaml_concat_string "to_char : " (scaml_concat_string (to_string i) " is not a char code (0 to 255).")) }
+    }
 }
 
 impl conversionnable of float {
     fn to_int { scaml_int_of_float }
     fn to_float { Fun.id }
     fn to_string { string_of_float }
+    fn to_char f { to_char (to_int f) }
 }
 
 trait arithm {
@@ -284,6 +291,7 @@ impl conversionnable of option {
     fn to_int o { match o { None -> 1 | Some _ -> 0 } }
     fn to_float o { to_float (to_int o) }
     fn to_string o { match o { None -> "None" | Some w -> "Some " + (to_string w)} }
+    fn to_char o { match o { None -> failwith "to_char : None has no char." | Some w -> to_char w } }
 }
 
 impl arithm of array, int {
@@ -655,12 +663,18 @@ impl conversionnable of string {
   fn to_int { scaml_int_of_string }
   fn to_float { scaml_float_of_string }
   fn to_string s { s }
+  // A string of exactly one char: `to_char "a"` is 'a'.
+  fn to_char s {
+    if String.length s == 1 then s[0]
+    else failwith "to_char : the string must have exactly one char."
+  }
 }
 
 impl conversionnable of bool {
   fn to_int b { if b then 1 else 0 }
   fn to_float b { if b then 1. else 0. }
   fn to_string b { if b then "true" else "false" }
+  fn to_char _ { failwith "to_char : unsupported on bool." }
 }
 
 trait filterable {
@@ -721,24 +735,31 @@ impl conversionnable of list {
       | x::xs -> "[ " + (aux (to_string x) xs) + " ]"
     }
   }
+  fn to_char _ { failwith "to_char : unsupported on list." }
 }
 
 impl conversionnable of char {
   fn to_int c { Char.code c }
   fn to_float c { scaml_float_of_int (Char.code c) }
   fn to_string c { String.make 1 c }
+  fn to_char c { c }
 }
 
 impl conversionnable of bytes {
   fn to_int _ { failwith "to_int : unsupported on bytes." }
   fn to_float _ { failwith "to_float : unsupported on bytes." }
   fn to_string b { Bytes.to_string b }
+  fn to_char b {
+    if Bytes.length b == 1 then b[0]
+    else failwith "to_char : the bytes must have exactly one char."
+  }
 }
 
 impl conversionnable of unit {
   fn to_int _ { 0 }
   fn to_float _ { 0. }
   fn to_string _ { "()" }
+  fn to_char _ { failwith "to_char : unsupported on unit." }
 }
 
 impl conversionnable of array {
@@ -753,6 +774,7 @@ impl conversionnable of array {
     if Array.length a == 0 then "[|  |]"
     else "[| " + (aux (to_string a[0]) 1) + " |]"
   }
+  fn to_char _ { failwith "to_char : unsupported on array." }
 }
 
 impl conversionnable of range {
@@ -770,4 +792,5 @@ impl conversionnable of range {
       }
     }
   }
+  fn to_char _ { failwith "to_char : unsupported on range." }
 }

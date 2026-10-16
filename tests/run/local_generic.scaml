@@ -1,0 +1,34 @@
+// A local function calling another, generic one inside a trait's callback
+// (`map`, `fold_left`): both must be specialized from the outer call.
+fn f p {
+  fn g i { p[i] }
+  fn h i { map (^e -> g i) ["a"] }
+  h 0
+}
+
+fn construct pattern {
+  let l = len pattern;
+  fn aux i acc {
+    fn get_trans act i {
+      let next = to_string (pattern[i+1]);
+      if next == "*" then (i, act, i) else (i, act, i+1)
+    }
+    fn construct_all_transitions acc' i {
+      fold_left (^acc e -> (get_trans e i)::acc) acc' ["a"; "b"]
+    }
+    if i >= l then (0, l, acc)
+    else {
+      let cur = to_string (pattern[i]);
+      if cur == "*" then aux (i+1) acc
+      else if cur == "." then aux (i+1) (construct_all_transitions acc i)
+      else aux (i+1) ((get_trans cur i)::acc)
+    }
+  }
+  aux 0 []
+}
+
+fn main {
+  println (f "ab");
+  println (construct "a*");
+  println (construct ".*b*");
+}

@@ -1,0 +1,8 @@
+fn construct p {
+  fn aux i {
+    fn get i { p[i] }
+    map (^e -> String.length (get i)) ["a"]
+  }
+  aux 0
+}
+fn main { println (construct "ab") }

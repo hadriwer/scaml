@@ -1,0 +1,16 @@
+#use "stdlib/complex.scaml"
+fn main {
+  println (to_char 97);
+  println (to_char 98.7);
+  println (to_char 'z');
+  println (to_char "x");
+  println (to_char (Bytes.of_string "y"));
+  println (to_char (Some 65));
+  println (to_char (Some "q"));
+  println (to_char { re = 66.; im = 0. });
+  println (map to_char [72; 105]);
+  println (try to_char 300 with { Failure m -> { println m; ' ' } });
+  println (try to_char "ab" with { Failure m -> { println m; ' ' } });
+  println (try to_char true with { Failure m -> { println m; ' ' } });
+  println (try to_char [1] with { Failure m -> { println m; ' ' } });
+}

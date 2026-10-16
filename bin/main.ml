@@ -1951,9 +1951,14 @@ let report_type_error exn =
       | None -> { report with main = pretty report.main; sub = List.map pretty report.sub }
       | Some _ ->
         let fname = main_loc.loc_start.pos_fname in
+        (* The first tag only: a clone made inside another one is tagged
+           again (`f.scaml [construct : string] [get_trans : string ->
+           _]`), and the error is reported at the outermost call. *)
         let instance =
           match String.index_opt fname '[' with
-          | Some i -> String.sub fname (i + 1) (String.length fname - i - 2)
+          | Some i ->
+            let j = Option.value (String.index_from_opt fname i ']') ~default:(String.length fname) in
+            String.sub fname (i + 1) (j - i - 1)
           | None -> fname
         in
         let fn_name, sig_text =
@@ -2392,19 +2397,50 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
      unresolved trait call (or, top-level, calling another such function). *)
   let candidates = Hashtbl.create 8 in
   let top_level = List.filter_map simple_binding structure |> List.map fst in
-  let value_binding self (vb : Parsetree.value_binding) =
-    (match vb.pvb_pat.ppat_desc with
-     | Ppat_var { txt = name; loc = name_loc } when fun_arity vb.pvb_expr > 0 && not (name_loc = Location.none) ->
-       let is_generic =
-         if List.mem name top_level then List.mem name generic_names
-         else has_unresolved_trait_call stuck vb.pvb_expr
-       in
-       if is_generic then Hashtbl.replace candidates (loc_key name_loc) (fun_arity vb.pvb_expr)
+  (* A local function is one too when it calls another local one that is
+     (`h` calling `g` in `fn g i { p[i] } fn h i { map (^e -> g i) l }`,
+     once `map` is resolved): only a clone of `h` gives `g` its argument
+     types. Until nothing changes. *)
+  let local_generic = ref [] in
+  (* Only a `let .. in` one: a clone of anything else local (an impl's
+     method, in its `struct`) would have nowhere to go. *)
+  let let_bound = Hashtbl.create 16 in
+  let expr self (e : Parsetree.expression) =
+    (match e.pexp_desc with
+     | Pexp_let (_, vbs, _) ->
+       List.iter
+         (fun (vb : Parsetree.value_binding) ->
+           match vb.pvb_pat.ppat_desc with Ppat_var { loc; _ } -> Hashtbl.replace let_bound (loc_key loc) () | _ -> ())
+         vbs
      | _ -> ());
-    Ast_iterator.default_iterator.value_binding self vb
+    Ast_iterator.default_iterator.expr self e
   in
-  let it = { Ast_iterator.default_iterator with value_binding } in
+  let it = { Ast_iterator.default_iterator with expr } in
   it.structure it structure;
+  let rec find_candidates () =
+    let before = Hashtbl.length candidates in
+    let value_binding self (vb : Parsetree.value_binding) =
+      (match vb.pvb_pat.ppat_desc with
+       | Ppat_var { txt = name; loc = name_loc } when fun_arity vb.pvb_expr > 0 && not (name_loc = Location.none) ->
+         let is_generic =
+           if List.mem name top_level then List.mem name generic_names
+           else
+             has_unresolved_trait_call stuck vb.pvb_expr
+             || (Hashtbl.mem let_bound (loc_key name_loc) && has_unresolved_trait_call !local_generic vb.pvb_expr)
+         in
+         if is_generic then begin
+           Hashtbl.replace candidates (loc_key name_loc) (fun_arity vb.pvb_expr);
+           if Hashtbl.mem let_bound (loc_key name_loc) && not (List.mem name !local_generic) then
+             local_generic := name :: !local_generic
+         end
+       | _ -> ());
+      Ast_iterator.default_iterator.value_binding self vb
+    in
+    let it = { Ast_iterator.default_iterator with value_binding } in
+    it.structure it structure;
+    if Hashtbl.length candidates > before then find_candidates ()
+  in
+  find_candidates ();
   (* ...whose parameters really are polymorphic (otherwise a clone would be
      no more concrete than the original). Keyed by their own [Ident.t], so
      a local variable shadowing the name is never mistaken for them. *)
@@ -2587,6 +2623,22 @@ let used_toplevel_bindings env methods (structure : Parsetree.structure) =
     typed.str_items;
   used
 
+(* Whether [e] binds a clone of the local function [name] (`name__monoN`,
+   see [monomorphize]). *)
+let has_local_clone name (e : Parsetree.expression) =
+  let prefix = name ^ "__mono" in
+  let n = String.length prefix in
+  let found = ref false in
+  let pat self (p : Parsetree.pattern) =
+    (match p.ppat_desc with
+     | Ppat_var { txt; _ } when String.length txt > n && String.sub txt 0 n = prefix -> found := true
+     | _ -> ());
+    Ast_iterator.default_iterator.pat self p
+  in
+  let it = { Ast_iterator.default_iterator with pat } in
+  it.expr it e;
+  !found
+
 let drop_unused_generics env methods (method_names : string list) (structure : Parsetree.structure) =
   let mentions name (e : Parsetree.expression) = has_unresolved_trait_call [ name ] e in
   let rec go structure =
@@ -2604,11 +2656,44 @@ let drop_unused_generics env methods (method_names : string list) (structure : P
   in
   let structure = go structure in
   let stuck = method_names @ generic_functions method_names structure in
+  (* Local functions still generic, also by calling one that is (`h`
+     calling `g`, both left behind by their clones): until nothing
+     changes. *)
+  let local_stuck = ref [] in
+  let rec find_local () =
+    let before = List.length !local_stuck in
+    let expr self (e : Parsetree.expression) =
+      (match e.pexp_desc with
+       | Pexp_let (_, vbs, _) ->
+         List.iter
+           (fun (vb : Parsetree.value_binding) ->
+             match vb.pvb_pat.ppat_desc with
+             | Ppat_var { txt = name; _ }
+               when fun_arity vb.pvb_expr > 0 && not (List.mem name !local_stuck)
+                    && has_unresolved_trait_call (stuck @ !local_stuck) vb.pvb_expr ->
+               local_stuck := name :: !local_stuck
+             | _ -> ())
+           vbs
+       | _ -> ());
+      Ast_iterator.default_iterator.expr self e
+    in
+    let it = { Ast_iterator.default_iterator with expr } in
+    it.structure it structure;
+    if List.length !local_stuck > before then find_local ()
+  in
+  find_local ();
+  let stuck = stuck @ !local_stuck in
+  (* Innermost first: `h` (unused) goes before `g` is looked at, which is
+     then unused too. *)
   let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) =
     match e.pexp_desc with
-    | Pexp_let (_, [ { pvb_pat = { ppat_desc = Ppat_var { txt = name; _ }; _ }; pvb_expr; _ } ], body)
-      when fun_arity pvb_expr > 0 && has_unresolved_trait_call stuck pvb_expr && not (mentions name body) ->
-      m.expr m body
+    | Pexp_let (rf, [ ({ pvb_pat = { ppat_desc = Ppat_var { txt = name; _ }; _ }; pvb_expr; _ } as vb) ], body) ->
+      let body' = m.expr m body in
+      (* Or one whose clones took its place (`explore__mono3`), even if
+         its own calls ended up resolved: unused, OCaml would warn. *)
+      let cloned = has_local_clone name body' in
+      if fun_arity pvb_expr > 0 && (has_unresolved_trait_call stuck pvb_expr || cloned) && not (mentions name body') then body'
+      else { e with pexp_desc = Pexp_let (rf, [ m.value_binding m vb ], body') }
     | _ -> Ast_mapper.default_mapper.expr m e
   in
   let mapper = { Ast_mapper.default_mapper with expr } in

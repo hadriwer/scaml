@@ -100,6 +100,7 @@ impl conversionnable of complex {
         if z.im < 0. then to_string z.re + " - " + to_string (neg z.im) + "i"
         else to_string z.re + " + " + to_string z.im + "i"
     }
+    fn to_char z { to_char (to_int z) }
 }
 
 impl showable of complex {

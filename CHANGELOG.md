@@ -37,6 +37,9 @@ syntax and the standard library may still change between minor versions.
 
 - `filterable` trait (`filter`) for `array` and `list`.
 - `conversionnable` impls for `string` and `bool`.
+- `to_char` in `conversionnable`: the char of a code (`to_char 97` is
+  `'a'`), of a one-char string or bytes, `to_char (Some x)`; fails on the
+  types without one (`bool`, `list`...).
 - `sizable` impl for `string` (`len "abc"`).
 - `maxn` and `minn`: maximum and minimum of two values.
 - `compare` and `sortable` trait (`sort`) for `array`, `list` and `matrix`
@@ -63,7 +66,9 @@ syntax and the standard library may still change between minor versions.
   over its `(key, value)` bindings.
 - `stdlib/dfa.scaml` (`#use "stdlib/dfa.scaml"`): deterministic finite
   automata, with states of any type: `init_dfa q0 finals transitions`,
-  `match_pattern`, `next_state`, `is_final`, `println`.
+  `match_pattern`, `next_state`, `is_final`, `println`, and `determinize`
+  (subset construction) from nondeterministic transitions, `""` standing
+  for an ε-transition (`init_dfa` refuses them).
 
 ### Compiler
 
@@ -89,6 +94,13 @@ syntax and the standard library may still change between minor versions.
   `a` where `print x` showed `"a"`.
 - Inside a generic impl, `println` on an array (or a list...) of its own
   element type failed with "Modules do not match".
+- A local function calling another generic local function inside a
+  trait's callback (`fn h i { map (^e -> g i) l }`, `g` indexing with
+  `p[i]`) failed with "Unbound value `[]`".
+- The error for a call that doesn't type-check inside a nested function
+  showed mangled types (`string] [get_trans : string -> _`).
+- No more "unused variable" warning from OCaml for a local function
+  whose specialized copies replaced it.
 
 ## 0.1.0 (2026-10-12)
 

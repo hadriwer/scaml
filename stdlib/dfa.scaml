@@ -18,6 +18,8 @@
 //
 //   let d = init_dfa "even" ["odd"] [("even", "b", "odd"); ("odd", "b", "even")];
 //   match_pattern d "abab"
+//
+// `determinize` builds one from nondeterministic transitions (see below).
 
 #use "stdlib/matrix.scaml"
 #use "stdlib/hashmap.scaml"
@@ -76,8 +78,15 @@ fn init_dfa beg finals l {
   iter (^(s, i) -> states[i] = s) index;
 
   let trans = make_matrix (len index) (len alpha) None;
+  // Two different targets for one state and letter: not deterministic,
+  // rather than silently keeping the last one.
   iter (^(s, a, s') -> {
-    trans[index[s], alpha[a]] = Some index[s'];
+    let (i, j, k) = (index[s], alpha[a], index[s']);
+    match trans[i, j] {
+      | Some k' -> if k' != k then failwith ("init_dfa : two transitions from the same state by the letter \"" + a + "\", the automaton isn't deterministic: use determinize.") else ()
+      | None -> ()
+    };
+    trans[i, j] = Some k;
   }) l;
 
   { states = states; index = index; alpha = alpha;
@@ -98,6 +107,63 @@ fn next_state dfa state a {
 }
 
 fn is_final dfa state { List.mem dfa.index[state] dfa.finals }
+
+// Determinization (subset construction)
+//
+// From transitions that may be nondeterministic -- several targets for
+// one state and letter, and `""` for an ε-transition (taken without
+// reading anything) -- the equivalent dfa, each of whose states is the
+// sorted list of the original states it stands for:
+//
+//   let d = determinize 0 [2] [(0, "a", 0); (0, "b", 0); (0, "b", 1); (1, "a", 2)];
+//   match_pattern d "abba"            // true: ends with "ba"
+
+// [set] and every state it reaches by ε-transitions, sorted.
+fn eps_closure l set {
+  fn go acc todo {
+    match todo {
+      | [] -> List.sort_uniq compare acc
+      | q::rest -> {
+          let next = fold_left (^found (s, a, s') ->
+            if s == q && a == "" && not (List.mem s' acc) && not (List.mem s' found)
+            then s'::found else found) [] l;
+          go (next @ acc) (next @ rest)
+        }
+    }
+  }
+  go set set
+}
+
+// The states reached from [set] by the letter [a] (and then ε-transitions).
+fn eps_step l set a {
+  eps_closure l (fold_left (^acc (s, b, s') -> if b == a && List.mem s set then s'::acc else acc) [] l)
+}
+
+fn determinize beg finals l {
+  let letters = List.sort_uniq compare (fold_left (^acc (_, a, _) -> if a == "" then acc else a::acc) [] l);
+  let start = eps_closure l [beg];
+  let seen = make_hashmap 16;
+  insert seen start ();
+  // Every set reachable from [start], letter by letter.
+  fn explore todo trans {
+    match todo {
+      | [] -> trans
+      | set::rest -> {
+          let (todo', trans') = fold_left (^(td, tr) a -> {
+            let target = eps_step l set a;
+            if target == [] then (td, tr)
+            else if contains_key seen target then (td, (set, a, target)::tr)
+            else { insert seen target (); (target::td, (set, a, target)::tr) }
+          }) (rest, trans) letters;
+          explore todo' trans'
+        }
+    }
+  }
+  let trans = explore [start] [];
+  // A set is final if one of its states is.
+  let finals' = List.filter (^set -> exists (^q -> List.mem q finals) set) (keys seen);
+  init_dfa start finals' (List.rev trans)
+}
 
 // Whether [pattern] is accepted: each of its chars is a letter.
 fn match_pattern dfa pattern {
