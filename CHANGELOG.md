@@ -49,6 +49,10 @@ syntax and the standard library may still change between minor versions.
 - Slicing a string with a range (`s[a..b]`, `s[(a..b) + 2]`) takes linear
   time (`String.sub` for a step of 1), instead of building it char by char.
 
+### Compiler
+
+- `scamlc --version` prints the compiler version.
+
 ### Fixed
 
 - Char literals accept any character and OCaml's escapes (`' '`, `'1'`,

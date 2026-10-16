@@ -1,7 +1,7 @@
 (executable
  (public_name scamlc)
  (name main)
- (modules main stdlib_files)
+ (modules main stdlib_files version)
  (libraries SCaml compiler-libs.common))
 
 (rule
@@ -13,3 +13,10 @@
   (with-stdout-to
    %{target}
    (run embed/embed.exe %{deps}))))
+
+(rule
+ (target version.ml)
+ (action
+  (with-stdout-to
+   %{target}
+   (echo "let version = \"%{version:SCaml}\"\n"))))

@@ -2640,6 +2640,10 @@ let warn_stdlib_overrides (stdlib : Parsetree.structure) (user : Parsetree.struc
 
 let () =
   let args = List.tl (Array.to_list Sys.argv) in
+  if List.mem "--version" args then begin
+    Printf.printf "scamlc %s\n" Version.version;
+    exit 0
+  end;
   let verbose = List.mem "--verbose" args || List.mem "-v" args in
   let tokens_mode = List.mem "--tokens" args in
   (* Keep every intermediate file next to the source (.generated.ml, .cmi,
@@ -2838,5 +2842,5 @@ let () =
        Printf.eprintf "ocamlfind ocamlopt failed (exit %d)\n" code;
        exit 1)
   | _ ->
-    Printf.eprintf "Usage: %s [--tokens] [--verbose|-v] [--keep|-k] <file.scaml>\n" Sys.argv.(0);
+    Printf.eprintf "Usage: %s [--tokens] [--verbose|-v] [--keep|-k] <file.scaml>\n       %s --version\n" Sys.argv.(0) Sys.argv.(0);
     exit 1
