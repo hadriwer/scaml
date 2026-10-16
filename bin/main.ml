@@ -1401,8 +1401,18 @@ let harvest_dispatch
               | `ContainerX (base, field) ->
                 let mod_name = impl_module_name trait_name base in
                 if not (target_is_self mod_name) then
-                  (match all_param_names other_names 1 with
-                   | [ only_field ] ->
+                  (match Hashtbl.find_opt dict_requirements mod_name, all_param_names other_names 1 with
+                   (* That impl needs a value from its element (`println
+                      d.states` on an `X.s array`, `showable of array`
+                      printing each one): the enclosing impl's own
+                      dictionary, as for [`ContainerXTree] below. *)
+                   | Some ((_, needed_trait) :: _), _ ->
+                     (match !current_impl_module with
+                      | Some m -> add_dict_requirement m (field, needed_trait)
+                      | None -> ());
+                     Hashtbl.replace table (loc_key head.exp_loc)
+                       (Functored (mod_name, DictModule (Dict (dict_param field, []))))
+                   | _, [ only_field ] ->
                      Hashtbl.replace table (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaX field) ]))
                    | _ -> ());
                 (* The container's element type is also `field` -- scan any
@@ -1563,8 +1573,10 @@ let quoted_showable loc name =
       (Ast_helper.Mod.structure ~loc
          (Parse.implementation (Lexing.from_string
             (Printf.sprintf
-               "type a = %s\nlet print (x : a) = Printf.printf \"%s\" x\nlet println (x : a) = print x; print_newline ()\n"
-               ty fmt))))
+               (* `println` not through `print`: as a trait call, the
+                  dispatch would send it to the unquoted impl. *)
+               "type a = %s\nlet print (x : a) = Printf.printf \"%s\" x\nlet println (x : a) = Printf.printf \"%s\\n\" x\n"
+               ty fmt fmt))))
 
 (* The module a dictionary stands for: an impl, applied to the impls of its
    own elements ([nested], quoted for a string or a char, see
