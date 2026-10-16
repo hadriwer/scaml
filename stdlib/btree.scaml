@@ -1,0 +1,67 @@
+//**************************************************************************//
+//                                                                          //
+//                                  SCaml                                   //
+//                                                                          //
+//   Hadrien Lagier (wer)                                                   //
+//   Claude (Anthropic), co-author                                          //
+//                                                                          //
+//   Copyright (c) 2026 wer                                                 //
+//                                                                          //
+//   This file is distributed under the terms of the MIT License,           //
+//   see the file LICENSE at the root of the project.                       //
+//                                                                          //
+//**************************************************************************//
+
+
+
+type a btree {
+    Leaf | Node of a btree, a, a btree
+}
+
+impl foldable of btree {
+    fn fold_left f acc t {
+        fn go acc t {
+            match t {
+                | Leaf -> acc
+                | Node (l, v, r) -> go (f (go acc l) v) r
+            }
+        }
+        go acc t
+    }
+
+    fn fold_right f t acc {
+        fn go t acc {
+            match t {
+                | Leaf -> acc
+                | Node (l, v, r) -> go l (f v (go r acc))
+            }
+        }
+        go t acc
+    }
+}
+
+impl iterable of btree {
+    fn iter f t { fold_left (^u v -> f v) () t }
+    fn iteri f t {
+        let _ = fold_left (^i v -> { f i v; i + 1 }) 0 t;
+        ()
+    }
+}
+
+
+fn btree_print_aux pr pre t {
+    let _ = String.length pre;
+    match t {
+        | Leaf -> println "leaf"
+        | Node (l, x, r) -> {
+            pr x;
+            print (pre + "├── "); btree_print_aux pr (pre + "│   ") l;
+            print (pre + "└── "); btree_print_aux pr (pre + "    ") r
+        }
+    }
+}
+
+impl showable of btree {
+    fn print t { btree_print_aux (^x -> println x) "" t }
+    fn println t { print t }
+}

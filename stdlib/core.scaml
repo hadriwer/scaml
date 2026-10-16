@@ -244,32 +244,6 @@ fn sum acc c { fold_left (+) acc c }
 op |> f g { g f }
 op :: x xs { scaml_list_cons x xs }
 
-type a btree {
-    Leaf | Node of a btree, a, a btree
-}
-
-impl foldable of btree {
-    fn fold_left f acc t {
-        fn go acc t {
-            match t {
-                | Leaf -> acc
-                | Node (l, v, r) -> go (f (go acc l) v) r
-            }
-        }
-        go acc t
-    }
-
-    fn fold_right f t acc {
-        fn go t acc {
-            match t {
-                | Leaf -> acc
-                | Node (l, v, r) -> go l (f v (go r acc))
-            }
-        }
-        go t acc
-    }
-}
-
 impl arithm of string, string {
     op + { scaml_concat_string }
 }
