@@ -73,6 +73,10 @@ syntax and the standard library may still change between minor versions.
 ### Compiler
 
 - `scamlc --version` prints the compiler version.
+- Faster compilation (8 to 25 % on the test programs): each round of
+  trait resolution only walks again the code that changed, and chains of
+  overloaded calls (`t[i][j]`, `h[k] + 1`...) are resolved in one round
+  instead of one per call.
 
 ### Fixed
 

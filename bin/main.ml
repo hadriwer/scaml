@@ -832,13 +832,25 @@ let record_trait_call loc name trait_name env ty =
   in
   Hashtbl.replace trait_calls (loc_key loc) (name, trait_name, Format.asprintf "%a" Printtyp.type_expr ty, kind)
 
+(* Per typed item of the last round's probe: the requirement count it was
+   walked with, and what walking it added (dispatches, requirements,
+   misses). See [harvest_dispatch]. *)
+let harvest_cache :
+    (Typedtree.structure_item * int * ((string * int * int) * dispatch_target) list * (string * (string * string)) list
+     * (Location.t * string * string * string list) list) list ref =
+  ref []
+
+(* The items (by location) the last [harvest_dispatch] really walked: only
+   those can have something new to rewrite. *)
+let harvest_walked : (string * int * int) list ref = ref []
+
 (* Walks the probed Typedtree looking for `Texp_apply` whose function is
    directly a trait method name (e.g. `+ a b`, `print x`, or the innermost
    application in a curried multi-arg call). For each one found, reads the
    inferred type of its first real argument and records, keyed by the
    location of that method-name identifier, which impl module it resolves
    to -- e.g. `+` applied to two [int]s records "Arithm__int" at that spot. *)
-let harvest_dispatch
+let harvest_dispatch ?(cache = false)
     (methods : (string * string * string list * (string * int) option list) list)
     (abstract_types : (string, string list) Hashtbl.t)
     (ctor_methods : (string, ctor_method) Hashtbl.t)
@@ -857,6 +869,12 @@ let harvest_dispatch
       Hashtbl.replace names_of_name name names)
     methods;
   let table : (string * int * int, dispatch_target) Hashtbl.t = Hashtbl.create 16 in
+  (* What the item being walked adds, for [harvest_cache]. *)
+  let entry_log = ref [] and req_log = ref [] in
+  let record_entry key target =
+    Hashtbl.replace table key target;
+    entry_log := (key, target) :: !entry_log
+  in
   (* Per generic impl module (keyed by its name, e.g. "Showable__array"):
      the one padding field of its own functor parameter that some call
      inside its body needs a *value* from (not just a type), and which
@@ -874,13 +892,15 @@ let harvest_dispatch
      rewritten and upgraded (its `X.__elem0__` renamed to `X.a`), and must
      not re-record its requirement under that new name. *)
   let add_dict_requirement mod_name req =
-    match Hashtbl.find_opt dict_requirements mod_name with
+    let before = Hashtbl.find_opt dict_requirements mod_name in
+    (match before with
     | None -> Hashtbl.replace dict_requirements mod_name [ req ]
     (* An impl with several parameters (`showable of (k, v) Hashtbl.t`)
        can need one per parameter. *)
     | Some reqs when is_multi_impl mod_name && not (List.mem_assoc (fst req) reqs) ->
       Hashtbl.replace dict_requirements mod_name (reqs @ [ req ])
-    | Some _ -> ()
+    | Some _ -> ());
+    if Hashtbl.find_opt dict_requirements mod_name != before then req_log := (mod_name, req) :: !req_log
   in
   (* The traits the dictionaries passed to impl [m] for its [n] type
      arguments must satisfy: each its own, for an impl needing one per
@@ -1004,7 +1024,7 @@ let harvest_dispatch
                  | _ -> false
                in
                if List.exists is_callback_var dispatch_args2 then begin
-                 Hashtbl.replace table (loc_key head2.exp_loc) (ViaDictParam (dict_param field, name2));
+                 record_entry (loc_key head2.exp_loc) (ViaDictParam (dict_param field, name2));
                  match !current_impl_module with
                  | Some mod_name2 -> add_dict_requirement mod_name2 (field, trait_name2)
                  | None -> ()
@@ -1199,17 +1219,17 @@ let harvest_dispatch
            | Some _, Some _
              when !absurd_free_type_vars
                   && List.exists (fun (a : Typedtree.expression) -> is_empty_type a.exp_env a.exp_type) all_args ->
-             Hashtbl.replace table (loc_key head.exp_loc) (Absurd (List.length all_args))
+             record_entry (loc_key head.exp_loc) (Absurd (List.length all_args))
            | Some _, Some _ when Hashtbl.mem overloads name ->
              let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) all_args in
              (match resolve_overload head.exp_loc name arg_tys with
-              | Some t -> Hashtbl.replace table (loc_key head.exp_loc) t
+              | Some t -> record_entry (loc_key head.exp_loc) t
               | None -> ())
            | Some _, Some arity when arity > 0 && List.length all_args >= arity && Hashtbl.mem ctor_methods name ->
              let dispatch_args = List.filteri (fun i _ -> i < arity) all_args in
              let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) dispatch_args in
              (match resolve_ctor (Hashtbl.find ctor_methods name) arg_tys with
-              | Some t -> Hashtbl.replace table (loc_key head.exp_loc) t
+              | Some t -> record_entry (loc_key head.exp_loc) t
               | None -> ())
            | Some trait_name, Some arity when arity > 0 && List.length all_args >= arity ->
              let dispatch_args = List.filteri (fun i _ -> i < arity) all_args in
@@ -1290,13 +1310,13 @@ let harvest_dispatch
                   let m = impl_module_name trait n in
                   Dict (m, List.map2 dict_for (arg_traits m trait (List.length args)) args)
                 in
-                Hashtbl.replace table (loc_key head.exp_loc) (DictCall (dict_for trait_name (Ty (type_name, arg_trees))))
+                record_entry (loc_key head.exp_loc) (DictCall (dict_for trait_name (Ty (type_name, arg_trees))))
               | `Concrete (type_name, arg_trees) ->
                 let arg_tys = List.map (fun (a : Typedtree.expression) -> (a.exp_env, a.exp_type)) dispatch_args in
                 let mod_name, free_values, target = concrete_target name trait_name arity arg_tys type_name arg_trees in
                 (match target with
                  | Some t when not (target_is_self mod_name) && impl_exists head.exp_env mod_name ->
-                   Hashtbl.replace table (loc_key head.exp_loc) t
+                   record_entry (loc_key head.exp_loc) t
                  | _ -> ());
                 (* A callback argument passed bare (e.g. `println` in `iter
                    println arr`) never appears as the head of its own
@@ -1332,7 +1352,7 @@ let harvest_dispatch
                              | Some arg_trait when not (Hashtbl.mem overloads arg_name) ->
                                let arg_mod_name = impl_module_name arg_trait concrete_type in
                                if not (target_is_self arg_mod_name) then
-                                 Hashtbl.replace table (loc_key arg.exp_loc) (Plain arg_mod_name)
+                                 record_entry (loc_key arg.exp_loc) (Plain arg_mod_name)
                              | _ -> ())
                           | _ -> ())
                        | _ -> ())
@@ -1358,7 +1378,7 @@ let harvest_dispatch
                         Dict (dict_param field, []))
                     comps
                 in
-                Hashtbl.replace table (loc_key head.exp_loc)
+                record_entry (loc_key head.exp_loc)
                   (DictCall (Dict (impl_module_name trait_name (Printf.sprintf "tuple%d" (List.length comps)), comp_dicts)))
               | `TupleX _ -> ()
               | `DirectX field ->
@@ -1366,7 +1386,7 @@ let harvest_dispatch
                    impl's own abstract padding field: needs a value, not
                    just a type, so defer straight through that functor
                    parameter ("X") rather than to any named impl module. *)
-                Hashtbl.replace table (loc_key head.exp_loc) (ViaDictParam (dict_param field, name));
+                record_entry (loc_key head.exp_loc) (ViaDictParam (dict_param field, name));
                 (match !current_impl_module with
                  | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
                  | None -> ())
@@ -1392,11 +1412,11 @@ let harvest_dispatch
                          let m = impl_module_name trait n in
                          Dict (m, List.map2 dict_for (arg_traits m trait (List.length args)) args)
                      in
-                     Hashtbl.replace table (loc_key head.exp_loc) (Functored (mod_name, DictModule (dict_for needed_trait elem)))
+                     record_entry (loc_key head.exp_loc) (Functored (mod_name, DictModule (dict_for needed_trait elem)))
                    | Some [] | None ->
                      (match all_param_names other_names 1 with
                       | [ only_field ] ->
-                        Hashtbl.replace table (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaXTree elem) ]))
+                        record_entry (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaXTree elem) ]))
                       | _ -> ()))
               | `ContainerX (base, field) ->
                 let mod_name = impl_module_name trait_name base in
@@ -1410,10 +1430,10 @@ let harvest_dispatch
                      (match !current_impl_module with
                       | Some m -> add_dict_requirement m (field, needed_trait)
                       | None -> ());
-                     Hashtbl.replace table (loc_key head.exp_loc)
+                     record_entry (loc_key head.exp_loc)
                        (Functored (mod_name, DictModule (Dict (dict_param field, []))))
                    | _, [ only_field ] ->
-                     Hashtbl.replace table (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaX field) ]))
+                     record_entry (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaX field) ]))
                    | _ -> ());
                 (* The container's element type is also `field` -- scan any
                    callback argument (e.g. `iter`'s first argument) for
@@ -1439,7 +1459,7 @@ let harvest_dispatch
                                let name2 = Longident.last lid2.txt in
                                (match Hashtbl.find_opt trait_of_name name2 with
                                 | Some trait_name2 when not (Hashtbl.mem overloads name2) ->
-                                  Hashtbl.replace table (loc_key callback_arg.exp_loc) (ViaDictParam (dict_param field, name2));
+                                  record_entry (loc_key callback_arg.exp_loc) (ViaDictParam (dict_param field, name2));
                                   (match !current_impl_module with
                                    | Some mod_name2 -> add_dict_requirement mod_name2 (field, trait_name2)
                                    | None -> ())
@@ -1472,11 +1492,11 @@ let harvest_dispatch
           (match Hashtbl.find_opt ctor_methods name with
            | _ when Hashtbl.mem overloads name ->
              (match resolve_overload e.exp_loc name arg_tys with
-              | Some t -> Hashtbl.replace table (loc_key e.exp_loc) t
+              | Some t -> record_entry (loc_key e.exp_loc) t
               | None -> ())
            | Some cm ->
              (match resolve_ctor cm arg_tys with
-              | Some t -> Hashtbl.replace table (loc_key e.exp_loc) t
+              | Some t -> record_entry (loc_key e.exp_loc) t
               | None -> ())
            | None ->
              (match self_pos_of name trait_name arity with
@@ -1487,7 +1507,7 @@ let harvest_dispatch
                  | Some (Ty (type_name, arg_trees)) ->
                    (match concrete_target name trait_name arity arg_tys type_name arg_trees with
                     | mod_name, _, Some t when not (target_is_self mod_name) && impl_exists e.exp_env mod_name ->
-                      Hashtbl.replace table (loc_key e.exp_loc) t
+                      record_entry (loc_key e.exp_loc) t
                     | _ -> ())
                  | None ->
                    (* Inside a generic impl, on its own element type (e.g.
@@ -1497,7 +1517,7 @@ let harvest_dispatch
                     | Tconstr (path, [], _) ->
                       (match path_is_x_field path with
                        | Some field ->
-                         Hashtbl.replace table (loc_key e.exp_loc) (ViaDictParam (dict_param field, name));
+                         record_entry (loc_key e.exp_loc) (ViaDictParam (dict_param field, name));
                          (match !current_impl_module with
                           | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
                           | None -> ())
@@ -1519,7 +1539,39 @@ let harvest_dispatch
     current_impl_module := prev
   in
   let iterator = { Tast_iterator.default_iterator with expr; module_binding } in
-  iterator.structure iterator typed;
+  (* Item by item: one the probe reused as is (the very same typed item,
+     see [probe_typecheck]'s cache), with the same requirements as when it
+     was last walked (they only grow: their count tells), gives the same
+     results again, replayed instead of walked. *)
+  let req_count () = Hashtbl.fold (fun _ reqs n -> n + 1 + List.length reqs) dict_requirements 0 in
+  let previous = !harvest_cache in
+  let walked = ref [] in
+  let next_cache =
+    List.map
+      (fun (ti : Typedtree.structure_item) ->
+        let count = req_count () in
+        match
+          if cache then List.find_opt (fun (ti', count', _, _, _) -> ti' == ti && count' = count) previous else None
+        with
+        | Some ((_, _, entries, reqs, misses) as cached) ->
+          List.iter (fun (key, target) -> Hashtbl.replace table key target) (List.rev entries);
+          List.iter (fun (m, req) -> add_dict_requirement m req) (List.rev reqs);
+          overload_misses := misses @ !overload_misses;
+          cached
+        | None ->
+          entry_log := [];
+          req_log := [];
+          let misses_before = !overload_misses in
+          iterator.structure_item iterator ti;
+          walked := loc_key ti.str_loc :: !walked;
+          let rec added l = if l == misses_before then [] else match l with x :: rest -> x :: added rest | [] -> [] in
+          (ti, count, !entry_log, !req_log, added !overload_misses))
+      typed.str_items
+  in
+  if cache then begin
+    harvest_cache := next_cache;
+    harvest_walked := !walked
+  end;
   (match List.rev !overload_misses with
    | (loc, trait_name, name, tys) :: _ ->
      (* Names the missing method too: a trait may be implemented only in
@@ -1590,7 +1642,9 @@ let rec mod_of_dict ~nested loc (Dict (name, args)) =
       (Ast_helper.Mod.ident ~loc (Location.mkloc (Longident.Lident name) loc))
       args
 
-let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (structure : Parsetree.structure) =
+(* [only]: the items (by location) that can have something to rewrite,
+   the others are kept as they are (the very same values). *)
+let rewrite_dispatch ?only (table : (string * int * int, dispatch_target) Hashtbl.t) (structure : Parsetree.structure) =
   let expr (mapper : Ast_mapper.mapper) (e : Parsetree.expression) =
     match e.pexp_desc with
     | Pexp_ident { txt = Longident.Lident name; _ } ->
@@ -1661,7 +1715,13 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
     | _ -> Ast_mapper.default_mapper.expr mapper e
   in
   let mapper = { Ast_mapper.default_mapper with expr } in
-  mapper.structure mapper structure
+  match only with
+  | None -> mapper.structure mapper structure
+  | Some only ->
+    List.map
+      (fun (item : Parsetree.structure_item) ->
+        if Hashtbl.mem only (loc_key item.pstr_loc) then mapper.structure_item mapper item else item)
+      structure
 
 (* For every impl [harvest_dispatch] found needing a *value*, not just a
    type, from its functor's padding parameter (e.g. `showable of array`'s
@@ -1677,7 +1737,7 @@ let rewrite_dispatch (table : (string * int * int, dispatch_target) Hashtbl.t) (
    half of this already, in [harvest_dispatch]'s `Concrete` case: passing
    the concrete impl module itself (e.g. `Showable__int`) as the whole
    functor argument instead of an anonymous struct. *)
-let upgrade_dict_impls
+let upgrade_dict_impls ?only
     (dict_requirements : (string, (string * string) list) Hashtbl.t)
     (abstract_types : (string, string list) Hashtbl.t)
     (structure : Parsetree.structure) : Parsetree.structure =
@@ -1747,7 +1807,19 @@ let upgrade_dict_impls
          | _ -> item)
       | _ -> item
     in
-    List.map upgrade_item structure
+    (* Not walked this round and already upgraded: nothing new. *)
+    let already_upgraded (item : Parsetree.structure_item) =
+      match item.pstr_desc with
+      | Pstr_module { pmb_expr = { pmod_desc = Pmod_functor (Named (_, { pmty_desc = Pmty_ident _; _ }), _); _ }; _ } -> true
+      | _ -> false
+    in
+    match only with
+    | None -> List.map upgrade_item structure
+    | Some only ->
+      List.map
+        (fun (item : Parsetree.structure_item) ->
+          if Hashtbl.mem only (loc_key item.pstr_loc) || not (already_upgraded item) then upgrade_item item else item)
+        structure
 
 (* A literal value of one of the known concrete types, used as a probe
    stub's body when the trait signature declares that exact return type
@@ -2949,6 +3021,20 @@ let () =
           | Pstr_value _ | Pstr_module _ ->
             let typed = { Typedtree.str_items = ti; str_type = []; str_final_env = env } in
             let table, _ = harvest_dispatch trait_methods abstract_types ctor_methods overloads dict_requirements typed in
+            (* Only the calls still unresolved in [item] (a bare name): one
+               dispatched by an earlier round (`Dispatch_mod_3.iter`) is
+               found again, but has nothing left to rewrite, and mustn't
+               hold the others back. *)
+            let bare = Hashtbl.create 16 in
+            let expr (it : Ast_iterator.iterator) (e : Parsetree.expression) =
+              (match e.pexp_desc with
+               | Pexp_ident { txt = Longident.Lident _; _ } -> Hashtbl.replace bare (loc_key e.pexp_loc) ()
+               | _ -> ());
+              Ast_iterator.default_iterator.expr it e
+            in
+            let it = { Ast_iterator.default_iterator with expr } in
+            it.structure_item it item;
+            Hashtbl.filter_map_inplace (fun key t -> if Hashtbl.mem bare key then Some t else None) table;
             let plain = Hashtbl.fold (fun _ t ok -> ok && (match t with Plain _ | Overload _ -> true | _ -> false)) table true in
             if Hashtbl.length table = 0 || not plain then None
             else (match rewrite_dispatch table [ item ] with [ item' ] when item' <> item -> Some item' | _ -> None)
@@ -2964,14 +3050,21 @@ let () =
           let structure = if local then !probe_refined else structure in
           if !default_free_type_vars then protect_bound_vars typed_probe;
           let dispatch_table, dict_requirements =
-            timed "harvest dispatch" (fun () -> harvest_dispatch trait_methods abstract_types ctor_methods overloads dict_requirements typed_probe)
+            timed "harvest dispatch" (fun () -> harvest_dispatch ~cache:true trait_methods abstract_types ctor_methods overloads dict_requirements typed_probe)
           in
           last_dict_requirements := dict_requirements;
           let rewritten =
-            timed "rewrite dispatch" (fun () -> rewrite_dispatch dispatch_table structure |> upgrade_dict_impls dict_requirements abstract_types)
+            let only = Hashtbl.create 64 in
+            List.iter (fun key -> Hashtbl.replace only key ()) !harvest_walked;
+            timed "rewrite dispatch" (fun () ->
+              rewrite_dispatch ~only dispatch_table structure |> upgrade_dict_impls ~only dict_requirements abstract_types)
           in
           if n <= 1 then rewritten
-          else if timed "compare structures" (fun () -> rewritten <> structure) then rounds (n - 1) dict_requirements rewritten
+          else if timed "compare structures" (fun () ->
+                    (* the very same item, as most are: unchanged *)
+                    List.compare_lengths rewritten structure <> 0
+                    || List.exists2 (fun a b -> a != b && a <> b) rewritten structure)
+          then rounds (n - 1) dict_requirements rewritten
           else
             match timed "monomorphize" (fun () -> monomorphize method_names mono_cache mono_counter typed_probe rewritten) with
             | mono, true -> rounds (n - 1) dict_requirements mono
