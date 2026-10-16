@@ -61,6 +61,9 @@ syntax and the standard library may still change between minor versions.
   `entries`..., `hm[k]`, `hm[k] = v`, `hm[k] += v` for any key type,
   `hm1 @ hm2`, `len`, `println hm`, and `iter`, `fold_left`, `forall`...
   over its `(key, value)` bindings.
+- `stdlib/dfa.scaml` (`#use "stdlib/dfa.scaml"`): deterministic finite
+  automata, with states of any type: `init_dfa q0 finals transitions`,
+  `match_pattern`, `next_state`, `is_final`, `println`.
 
 ### Compiler
 
@@ -81,6 +84,11 @@ syntax and the standard library may still change between minor versions.
   `impl sizable of Hashtbl.t`, `impl indexable of Hashtbl.t, string`, and
   in a type, with several parameters as in OCaml: `W of (string, int)
   Hashtbl.t` (#15).
+- A string or a char inside a structure is quoted by `println` too, not
+  only by `print`: inside a generic impl, `println x` on an element showed
+  `a` where `print x` showed `"a"`.
+- Inside a generic impl, `println` on an array (or a list...) of its own
+  element type failed with "Modules do not match".
 
 ## 0.1.0 (2026-10-12)
 
