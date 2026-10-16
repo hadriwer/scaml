@@ -1,0 +1,106 @@
+// Deterministic Finite Automaton (DFA)
+// lib that implement simple automaton, whose states can be of any type
+// (int, string, char...) and whose letters are strings.
+//
+//   let d = init_dfa "even" ["odd"] [("even", "b", "odd"); ("odd", "b", "even")];
+//   match_pattern d "abab"
+
+#use "stdlib/matrix.scaml"
+#use "stdlib/hashmap.scaml"
+
+// The states are numbered (`index`, and back with `states`): transitions
+// are a matrix, state number x letter number.
+type s dfa {
+  states of s array ;
+  index of (s, int) Hashtbl.t ;
+  alpha of (string, int) Hashtbl.t ;
+  beg_state of int ;
+  finals of int list ;
+  trans of int option matrix
+}
+
+impl showable of dfa {
+  fn print d {
+    println "<Deterministic Finite Automaton : ";
+    print "Q = "; println d.states;
+    print "Σ = "; println (keys d.alpha);
+    // `Array.get`, not `d.states[i]`: a state shows the same everywhere
+    print "q₀ = "; println (Array.get d.states d.beg_state);
+    print "F = "; println (List.map (Array.get d.states) d.finals);
+    println "δ = ";
+    Array.iteri (^i s -> {
+      iter (^(a, j) -> {
+        match d.trans[i, j] {
+          | None -> ()
+          | Some k -> { print "  "; print s; print " -"; print a; print "-> "; println (Array.get d.states k) }
+        }
+      }) d.alpha
+    }) d.states;
+    print ">";
+  }
+
+  fn println d { print d; println () }
+}
+
+// usage: init_dfa q0 [final states] [(s1, "a", s2); (s2, "a", s2) ...]
+// state s1 -- letter "a" -- goes to state s2 ...
+fn init_dfa beg finals l {
+  let index = make_hashmap 16;
+  let alpha = make_hashmap 16;
+  fn add_state s {
+    if contains_key index s then () else insert index s (len index)
+  }
+  add_state beg;
+  iter (^(s, a, s') -> {
+    add_state s;
+    add_state s';
+    if contains_key alpha a then () else insert alpha a (len alpha)
+  }) l;
+  iter add_state finals;
+
+  let states = Array.make (len index) beg;
+  iter (^(s, i) -> states[i] = s) index;
+
+  let trans = make_matrix (len index) (len alpha) None;
+  iter (^(s, a, s') -> {
+    trans[index[s], alpha[a]] = Some index[s'];
+  }) l;
+
+  { states = states; index = index; alpha = alpha;
+    beg_state = index[beg]; finals = List.map (^s -> index[s]) finals; trans = trans }
+}
+
+// The state reached from [state] by the letter [a], if any.
+fn next_state dfa state a {
+  match get dfa.alpha a {
+    | None -> None
+    | Some j -> {
+        match dfa.trans[dfa.index[state], j] {
+          | None -> None
+          | Some k -> Some dfa.states[k]
+        }
+      }
+  }
+}
+
+fn is_final dfa state { List.mem dfa.index[state] dfa.finals }
+
+// Whether [pattern] is accepted: each of its chars is a letter.
+fn match_pattern dfa pattern {
+  let n = len pattern;
+  fn aux i state {
+    if i >= n then List.mem state dfa.finals
+    else {
+      match get dfa.alpha (to_string (pattern[i])) {
+        | None -> false
+        | Some a -> {
+            match dfa.trans[state, a] {
+              | None -> false
+              | Some state' -> aux (i+1) state'
+            }
+          }
+      }
+    }
+  }
+  aux 0 dfa.beg_state
+}

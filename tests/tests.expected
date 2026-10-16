@@ -77,6 +77,33 @@ size: 100
 [ 20 ]
 3
 2
+=== run/dfa.scaml
+<Deterministic Finite Automaton : 
+Q = [| 0; 1 |]
+Σ = [ "b"; "a" ]
+q₀ = 0
+F = [ 1 ]
+δ = 
+  0 -a-> 0
+  0 -b-> 1
+  1 -a-> 1
+  1 -b-> 0
+>
+true
+<Deterministic Finite Automaton : 
+Q = [| "even"; "odd" |]
+Σ = [ "b"; "a" ]
+q₀ = "even"
+F = [ "odd" ]
+δ = 
+  "even" -a-> "even"
+  "even" -b-> "odd"
+  "odd" -a-> "odd"
+  "odd" -b-> "even"
+>
+false
+Some "odd"
+true
 === run/exceptions.scaml
 5
 0

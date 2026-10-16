@@ -1,0 +1,12 @@
+#use "stdlib/dfa.scaml"
+
+fn main {
+  let d = init_dfa 0 [1] [(0, "a", 0); (0, "b", 1); (1, "a", 1); (1, "b", 0)];
+  println d;
+  println (match_pattern d "abaaaaaaaaabaaaab");
+  let e = init_dfa "even" ["odd"] [("even", "b", "odd"); ("odd", "b", "even"); ("even", "a", "even"); ("odd", "a", "odd")];
+  println e;
+  println (match_pattern e "abab");
+  println (next_state e "even" "b");
+  println (is_final e "odd");
+}
