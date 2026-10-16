@@ -78,6 +78,15 @@ syntax and the standard library may still change between minor versions.
   overloaded calls (`t[i][j]`, `h[k] + 1`...) are resolved in one round
   instead of one per call.
 
+### Editors
+
+- VS Code and Neovim: function calls have their own color, told from
+  variables by their position (the head of an application, `println x`,
+  is a function, its arguments aren't), and so do the standard library's
+  functions passed as values; types after `of` are colored as types.
+  Parameters of indexing operators (`op []+= a i v`) are no longer taken
+  for something else.
+
 ### Fixed
 
 - Char literals accept any character and OCaml's escapes (`' '`, `'1'`,

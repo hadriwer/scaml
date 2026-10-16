@@ -33,6 +33,11 @@ themes that ship their own icon set may override it.
 - keywords: `fn`, `op`, `let`, `type`, `trait`, `impl`, `of`, `match`, `if`, `then`, `else`, `try`, `with`, `exception`
 - lambdas `^x y -> ...` and their parameters
 - names declared by `fn`, `op`, `type`, `trait`, `impl`, `let`
+- function calls, told from variables by their position: the head of an
+  application (`println x`, `len l`, `f (x)`) is a function, its arguments
+  aren't; the standard library's functions also when passed as values
+  (`map to_char l`)
+- types after `of` (`Node of a btree, a`, `fn print of a -> unit`)
 - constructors (`Some`, `Node`), modules (`Array.make`), record fields (`p.name`)
 - strings with escapes (`\n`, `\t`, `\"`, `\\`), chars (`'a'`), ints, floats
 - builtin types (`int`, `float`, `string`, `list`, `array`, ...)

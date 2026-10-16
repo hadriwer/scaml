@@ -37,6 +37,9 @@
       "include": "#impl-declaration"
     },
     {
+      "include": "#type-annotation"
+    },
+    {
       "include": "#let-binding"
     },
     {
@@ -68,6 +71,12 @@
     },
     {
       "include": "#punctuation"
+    },
+    {
+      "include": "#stdlib-function"
+    },
+    {
+      "include": "#function-call"
     },
     {
       "include": "#identifier"
@@ -152,8 +161,8 @@
       ]
     },
     "op-declaration": {
-      "comment": "op <symbols> params {  /  op <symbols> of type  (in traits)",
-      "begin": "\\b(op)\\s+([+\\-*/<>:%.|=&!@^]+)",
+      "comment": "op <symbols> params {  /  op <symbols> of type  (in traits); also the indexing ones, `op [] a i`, `op []+= a i v`",
+      "begin": "\\b(op)\\s+(\\[\\][+\\-*/<>:%.|=&!@^]*|[+\\-*/<>:%.|=&!@^]+)",
       "beginCaptures": {
         "1": {
           "name": "storage.type.function.operator.scaml"
@@ -421,6 +430,55 @@
     "identifier": {
       "name": "variable.other.scaml",
       "match": "\\b[a-z_][A-Za-z0-9_']*"
+    },
+    "type-annotation": {
+      "comment": "after `of`: a type (`of a btree, int`, `fn print of a -> unit`, `impl showable of (k, v) Hashtbl.t`), up to `;`, `{`, `}`, `|` or the end of the line",
+      "begin": "\\b(of)\\b",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.other.of.scaml"
+        }
+      },
+      "end": "(?=[;{}|])|$",
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#builtin-type"
+        },
+        {
+          "include": "#module"
+        },
+        {
+          "include": "#number"
+        },
+        {
+          "name": "keyword.operator.arrow.scaml",
+          "match": "->"
+        },
+        {
+          "include": "#punctuation"
+        },
+        {
+          "name": "entity.name.type.scaml",
+          "match": "\\b[a-z_][A-Za-z0-9_']*"
+        }
+      ]
+    },
+    "stdlib-function": {
+      "comment": "the standard library's functions and trait methods, also passed as values (`map to_char l`)",
+      "name": "support.function.scaml",
+      "match": "\\b(?:print|println|to_int|to_float|to_string|to_char|iter|iteri|fold_left|fold_right|map|mapi|map2|forall|exists|len|neg|max|min|argmax|argmin|filter|sort|sum|repeat|maxn|minn|compare|split_apply_on_char|not|ignore|failwith|fst|snd|raise)\\b(?!')"
+    },
+    "function-call": {
+      "comment": "the head of an application is a function: `f x`, `f (x)`, `f \"s\"`, `f [1]`, `f ^x -> ..`, `f(x)` -- not an argument after it (`index` in `insert index s`), unless after a keyword (`then f x`); `a[i]` (no space) is indexing, `match x {` isn't a call",
+      "match": "(?:(?<=\\b(?:if|then|else|match|try|with)\\s)|(?<![A-Za-z0-9_'\")\\]]\\s))\\b(?!(?:if|then|else|match|try|with|exception|fn|op|let|type|trait|impl|of|true|false)\\b)([a-z_][A-Za-z0-9_']*)(?=\\(|\\s+(?!(?:then|else|with|of)\\b)[A-Za-z0-9_\"'(\\[^])",
+      "captures": {
+        "1": {
+          "name": "entity.name.function.call.scaml"
+        }
+      }
     }
   }
 }
