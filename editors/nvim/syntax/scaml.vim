@@ -8,7 +8,7 @@ endif
 syn iskeyword @,48-57,_,'
 
 " Keywords
-syn keyword scamlConditional if then else match
+syn keyword scamlConditional if then else match function
 syn keyword scamlException   try with exception
 syn keyword scamlStorage     fn op let type trait impl
 syn keyword scamlBoolean     true false
@@ -24,7 +24,7 @@ syn match scamlModule      "\<[A-Z][A-Za-z0-9_']*\ze\.[A-Za-z_]"
 " argument (`index` in `insert index s`) or a lambda's parameter (`^acc e`).
 " `a[i]` (no space) is indexing. Before scamlField, so `p.len` stays a field.
 syn match scamlStdFunction "\<\%(print\|println\|to_int\|to_float\|to_string\|to_char\|iter\|iteri\|fold_left\|fold_right\|map\|mapi\|map2\|forall\|exists\|len\|neg\|max\|min\|argmax\|argmin\|filter\|sort\|sum\|repeat\|maxn\|minn\|compare\|split_apply_on_char\|not\|ignore\|failwith\|fst\|snd\|raise\)\>'\@!"
-syn match scamlFunctionCall "\%(\%(\<\%(if\|then\|else\|match\|try\|with\)\s\)\@6<=\|\%([A-Za-z0-9_'")\]]\s\)\@2<!\)\%(\^\)\@1<!\<\%(\%(if\|then\|else\|match\|try\|with\|exception\|fn\|op\|let\|type\|trait\|impl\|of\|true\|false\)\>\)\@![a-z_][A-Za-z0-9_']*\ze\%((\|\s\+\%(\%(then\|else\|with\|of\)\>\)\@![A-Za-z0-9_"'(\[^]\)"
+syn match scamlFunctionCall "\%(\%(\<\%(if\|then\|else\|match\|try\|with\)\s\)\@6<=\|\%([A-Za-z0-9_'")\]]\s\)\@2<!\)\%(\^\)\@1<!\<\%(\%(if\|then\|else\|match\|function\|try\|with\|exception\|fn\|op\|let\|type\|trait\|impl\|of\|true\|false\)\>\)\@![a-z_][A-Za-z0-9_']*\ze\%((\|\s\+\%(\%(then\|else\|with\|of\)\>\)\@![A-Za-z0-9_"'(\[^]\)"
 
 " `p.name`, but not `Array.make` (a module).
 syn match scamlField       "\%(\<[A-Z][A-Za-z0-9_']*\.\)\@<!\%([A-Za-z0-9_')\]]\.\)\@2<=[a-z_][A-Za-z0-9_']*"

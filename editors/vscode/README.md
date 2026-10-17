@@ -30,7 +30,7 @@ themes that ship their own icon set may override it.
 ## Highlighted
 
 - `//` comments, `#use` directives
-- keywords: `fn`, `op`, `let`, `type`, `trait`, `impl`, `of`, `match`, `if`, `then`, `else`, `try`, `with`, `exception`
+- keywords: `fn`, `op`, `let`, `type`, `trait`, `impl`, `of`, `match`, `function`, `if`, `then`, `else`, `try`, `with`, `exception`
 - lambdas `^x y -> ...` and their parameters
 - names declared by `fn`, `op`, `type`, `trait`, `impl`, `let`
 - function calls, told from variables by their position: the head of an

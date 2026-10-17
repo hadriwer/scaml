@@ -284,7 +284,7 @@
       "patterns": [
         {
           "name": "keyword.control.conditional.scaml",
-          "match": "\\b(if|then|else|match)\\b"
+          "match": "\\b(if|then|else|match|function)\\b"
         },
         {
           "name": "keyword.control.exception.scaml",
@@ -473,7 +473,7 @@
     },
     "function-call": {
       "comment": "the head of an application is a function: `f x`, `f (x)`, `f \"s\"`, `f [1]`, `f ^x -> ..`, `f(x)` -- not an argument after it (`index` in `insert index s`), unless after a keyword (`then f x`); `a[i]` (no space) is indexing, `match x {` isn't a call",
-      "match": "(?:(?<=\\b(?:if|then|else|match|try|with)\\s)|(?<![A-Za-z0-9_'\")\\]]\\s))\\b(?!(?:if|then|else|match|try|with|exception|fn|op|let|type|trait|impl|of|true|false)\\b)([a-z_][A-Za-z0-9_']*)(?=\\(|\\s+(?!(?:then|else|with|of)\\b)[A-Za-z0-9_\"'(\\[^])",
+      "match": "(?:(?<=\\b(?:if|then|else|match|try|with)\\s)|(?<![A-Za-z0-9_'\")\\]]\\s))\\b(?!(?:if|then|else|match|function|try|with|exception|fn|op|let|type|trait|impl|of|true|false)\\b)([a-z_][A-Za-z0-9_']*)(?=\\(|\\s+(?!(?:then|else|with|of)\\b)[A-Za-z0-9_\"'(\\[^])",
       "captures": {
         "1": {
           "name": "entity.name.function.call.scaml"
