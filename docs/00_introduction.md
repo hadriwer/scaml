@@ -90,7 +90,7 @@ fn total acc c {
     fold_left (+) acc c
 }
 
-fn main {
+fn main () {
     println (1 + 2);
     println (1. + 2.);
 

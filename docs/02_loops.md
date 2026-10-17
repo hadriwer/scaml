@@ -50,7 +50,7 @@ Indexing a string or an array with a range, instead of an integer, takes
 the part it covers, step and direction included:
 
 ```rust
-fn main {
+fn main () {
     let s = "abcdefgh";
     println s[2..5];            // cde
     println s[2..=5];           // cdef
@@ -75,7 +75,7 @@ slice.
 `iter f c` calls `f` on every element of `c`, in order:
 
 ```rust
-fn main {
+fn main () {
     iter println (0..=10);          // prints every number from 0 to 10
     iter println [|"a"; "b"|];      // works on arrays and lists too
 }
@@ -91,7 +91,7 @@ fn for iterator body {
     iter body iterator;
 }
 
-fn main {
+fn main () {
     let even = ^x -> x % 2 == 0;
 
     for (0..4) (^i -> {

@@ -19,7 +19,7 @@ fn foo a b { print a; print " << "; println b; }
 
 op << a b { print a; print " << "; println b; }
 
-fn main {
+fn main () {
     foo "a" 1;      // a << 1
 
     1 << "a";       // 1 << a
@@ -29,9 +29,11 @@ fn main {
 
 A few rules:
 
-- The entry point of a program is the `main` function.
-- A function without parameters takes `unit`: `fn main { .. }` is called as
-  `main ()`.
+- The entry point of a program is the `main` function, which takes `()`:
+  `fn main () { .. }`.
+- A function that takes nothing takes `()`, and says so: `fn hello () {
+  .. }`, called as `hello ()`. Without any parameter, a `fn` must be a
+  function itself (see [η-reduction](#η-reduction)).
 - The last expression of a block is its return value. No `return` keyword
   is needed.
 - An operator takes exactly two arguments, except an indexing one (see
@@ -53,7 +55,7 @@ fn norm1 ({ x; y }) { abs x + abs y }   // a record, in parentheses
 
 op <+> (a, b) (c, d) { (a + c, b + d) }
 
-fn main {
+fn main () {
     println (add (1, 2));                       // 3
     println (area ((0, 0), (2, 3)));            // 6
     println (second "ignored" 5);               // 5
@@ -114,7 +116,7 @@ fn main() {
 ## Your first program
 
 ```rust
-fn main {
+fn main () {
     println "Hello, World!"
 }
 ```
@@ -126,7 +128,7 @@ op |+| x y {
     (abs x) + (abs y)
 }
 
-fn main {
+fn main () {
     println (-1 |+| -2)     // 3
 }
 ```
@@ -173,7 +175,7 @@ An anonymous function (a lambda) is written with `^`, its parameters, then
 `->` and its body:
 
 ```rust
-fn main {
+fn main () {
     let double = ^x -> x * 2;
     println (double 2);                             // 4
 
@@ -189,6 +191,66 @@ let print_double = ^x -> {
     println x;
     x * 2
 };
+```
+
+## η-reduction
+
+A function that only passes its last arguments on can drop them, as in
+OCaml (η-reduction): a `fn` without any parameter is its body, which must
+then be a function itself.
+
+```rust
+fn mul a b { a * b }
+
+fn triple x { mul 3 x }     // can be written
+fn triple { mul 3 }         // the same function
+
+fn main () {
+    println (triple 5);     // 15
+}
+```
+
+So a function is either η-reduced or takes `()`: `fn hello { println
+"hello" }` is an error (its body is no function), write `fn hello () {
+println "hello" }`. A value is a [constant](#constants), `let answer = 6
+* 7;`, not a `fn`.
+
+## `function`
+
+`function` is a function that matches its one argument right away, without
+naming it: `function | p1 -> e1 | p2 -> e2` is `^x -> match x { | p1 ->
+e1 | p2 -> e2 }`. With η-reduction, it gives a function defined by its
+cases:
+
+```rust
+type a tree { Leaf | Node of a tree, a, a tree }
+
+fn size {
+    function
+    | Leaf -> 0
+    | Node (l, _, r) -> size l + 1 + size r
+}
+
+fn main () {
+    println (size (Node (Node (Leaf, 1, Leaf), 2, Leaf)));              // 2
+    println (map (function | Some x -> x | None -> 0) [Some 1; None]);  // [ 1; 0 ]
+}
+```
+
+Unlike `match`, its cases have no braces around them: they go on as far as
+they can. So, as in OCaml, a `function` inside one of the cases of another
+takes all the cases after it; put it in parentheses to end it:
+
+```rust
+fn classify {
+    function
+    | Some x -> (function | 0 -> "zero" | _ -> "other") x
+    | None -> "none"
+}
+
+fn main () {
+    println (map classify [Some 0; Some 5; None]);  // [ "zero"; "other"; "none" ]
+}
 ```
 
 ## Optional arguments
@@ -213,7 +275,7 @@ fn bar ?x y {
     }
 }
 
-fn main {
+fn main () {
     println (foo x=1 2);        // 3
     println (foo 2 x=1);        // 3
     println (foo 2);            // 2
@@ -246,7 +308,7 @@ fn show_sum ?u v {
     }
 }
 
-fn main {
+fn main () {
     show_sum 2;         // Alone : 2
     show_sum u=1 2;     // 3
 }
@@ -263,7 +325,7 @@ standard library has `[]+=` for arrays, and you can add your own:
 ```rust
 op []<- a i v { let b = Array.copy a; b[i] = v; b }    // a copy, changed
 
-fn main {
+fn main () {
     let a = [|1; 2; 3|];
     a[0] += 10;
     a[1] += 1 + 2;              // a[1] += (1 + 2)
@@ -301,7 +363,7 @@ let label = "size: " + to_string max_size;
 
 fn area r { pi * r * r }
 
-fn main {
+fn main () {
     println (area 2.);                  // 12.56636
     println (width * height);           // 480000
     println label;                      // size: 100
