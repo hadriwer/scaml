@@ -64,6 +64,7 @@ rule raw_token = parse
   | "let" { LET }
   (* | "in" { IN } *)
   | "match" { MATCH }
+  | "function" { FUNCTION }
   | "try" { TRY }
   | "with" { WITH }
   | "exception" { EXCEPTION }

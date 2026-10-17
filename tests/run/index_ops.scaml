@@ -1,7 +1,7 @@
 // indexing operators: the stdlib's `[]+=`, a user `[]<-`, used as expressions
 op []<- a i v { let b = Array.copy a; b[i] = v; b }
 
-fn main {
+fn main () {
   let a = [|1; 2; 3|];
   a[0] += 10;
   a[1] += 1 + 2;

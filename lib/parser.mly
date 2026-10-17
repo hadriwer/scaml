@@ -322,12 +322,15 @@ let mk_fn_expr loc params body =
 (* A [fn]'s parameters, each with its label and default value, as in
    OCaml: `y` is [(Nolabel, None, y, _)], `?x` is [(Optional "x", None,
    x, _)] and `?(x=0)` is [(Optional "x", Some 0, x, _)], with the
-   parameter's pattern (here the variables `y`, `x`), then its location. Zero params still
-   means a unit-taking function; an optional param with no positional one
-   after it is kept as is, OCaml then warns that it can't be omitted. *)
+   parameter's pattern (here the variables `y`, `x`), then its location.
+   Zero params is the body itself, not a unit-taking function: `fn triple
+   { f 3 }` is `let triple = f 3`, the η-reduced `fn triple x { f 3 x }`
+   (#11); a function taking unit says so, `fn hello () { .. }`. An
+   optional param with no positional one after it is kept as is, OCaml
+   then warns that it can't be omitted. *)
 let mk_labelled_fn_expr loc params body =
   match params with
-  | [] -> mk_fn_expr loc [] body
+  | [] -> body
   | _ ->
     List.fold_right
       (fun (lbl, def, pat, ploc) acc ->
@@ -357,17 +360,23 @@ let has_self_call name (body : expression) =
 
 (* Top-level [fn name(params) { body }]: becomes a structure-level binding,
    recursive iff [name] is called inside [body]. *)
+(* A [fn] without parameters must be a function itself, η-reduced (`fn
+   triple { mul 3 }`), not a plain value (`fn answer { 6 * 7 }`, a constant
+   is a `let`): only its type tells, so it is marked for bin/main.ml to
+   check once typed. *)
+let eta_attrs params = if params = [] then [ Ast_helper.Attr.mk (Location.mknoloc "scaml.eta") (PStr []) ] else []
+
 let mkfn loc name params body =
   let rec_flag = if has_self_call name body then Recursive else Nonrecursive in
   Ast_helper.Str.value ~loc rec_flag
-    [ Ast_helper.Vb.mk (Ast_helper.Pat.var (Location.mkloc name loc)) (mk_labelled_fn_expr loc params body) ]
+    [ Ast_helper.Vb.mk ~attrs:(eta_attrs params) (Ast_helper.Pat.var (Location.mkloc name loc)) (mk_labelled_fn_expr loc params body) ]
 
 (* Nested [fn name(params) { body } <rest>]: becomes a local function
    binding, i.e. sugar for [let (rec) name = fun params -> body in <rest>]. *)
 let mklocalfn loc name params body rest =
   let rec_flag = if has_self_call name body then Recursive else Nonrecursive in
   Ast_helper.Exp.let_ ~loc rec_flag
-    [ Ast_helper.Vb.mk (Ast_helper.Pat.var (Location.mkloc name loc)) (mk_labelled_fn_expr loc params body) ]
+    [ Ast_helper.Vb.mk ~attrs:(eta_attrs params) (Ast_helper.Pat.var (Location.mkloc name loc)) (mk_labelled_fn_expr loc params body) ]
     rest
 
 (* One method inside an `impl`. Zero params is a point-free alias -- e.g.
@@ -546,11 +555,16 @@ let load_used_file loc path : Parsetree.structure =
 %token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TRAIT IMPL TYPE OF
 %token QUESTION
 %token <string> INDEX_OP
-%token EOF DOT BAR MATCH INDEX_LBRACK LBRACKBAR BARRBRACK TRY WITH EXCEPTION
+%token EOF DOT BAR MATCH FUNCTION INDEX_LBRACK LBRACKBAR BARRBRACK TRY WITH EXCEPTION
 
 (* Binary operators, lowest priority first, as in OCaml (see
    [Lexer.operator]): `1 + 2 * 3` is `1 + (2 * 3)`, `x :: l @ m` is
    `x :: (l @ m)`, `a + b |> f` is `(a + b) |> f`. *)
+(* `function | A -> function | X -> 1 | Y -> 2 | B -> 3`: as in OCaml, an
+   inner `function` takes every case after it (`| Y`, `| B`): put it in
+   parentheses to end it. *)
+%nonassoc below_BAR
+%left BAR
 %right OP_OR
 %right OP_AND
 %left OP_CMP
@@ -1086,6 +1100,12 @@ expr:
     { mk_fn_expr (mkloc $startpos $endpos) params e }
   | MATCH; e = expr; LBRACE; option(BAR); cases = separated_nonempty_list(BAR, match_case); RBRACE
     { Ast_helper.Exp.match_ ~loc:(mkloc $startpos $endpos) e cases }
+  (* `function | p -> .. | ..`: OCaml's `function`, a function matching its
+     one argument, `^x -> match x { .. }` without naming it. Its cases go on
+     as far as they can, see [below_BAR]. *)
+  | FUNCTION; option(BAR); cases = function_cases
+    { let loc = mkloc $startpos $endpos in
+      Ast_helper.Exp.function_ ~loc [] None (Pfunction_cases (cases, loc, [])) }
   (* `try { ... } with { | Not_found -> ... | Failure msg -> ... }`: the
      arms are written like `match`'s, and match exceptions. *)
   | TRY; e = body; WITH; LBRACE; option(BAR); cases = separated_nonempty_list(BAR, match_case); RBRACE
@@ -1098,6 +1118,10 @@ let_pattern:
   | p = pattern { p }
   | first = pattern; COMMA; rest = separated_nonempty_list(COMMA, pattern)
     { Ast_helper.Pat.tuple ~loc:(mkloc $startpos $endpos) (List.map (fun p -> (None, p)) (first :: rest)) Closed }
+
+function_cases:
+  | c = match_case %prec below_BAR { [ c ] }
+  | c = match_case; BAR; rest = function_cases { c :: rest }
 
 match_case:
   | p = pattern; ARROW; e = body

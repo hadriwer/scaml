@@ -15,6 +15,7 @@ let string_of_token : Parser.token -> string = function
   | Parser.IF -> "IF"
   | Parser.THEN -> "THEN"
   | Parser.MATCH -> "MATCH"
+  | Parser.FUNCTION -> "FUNCTION"
   | Parser.TRY -> "TRY"
   | Parser.WITH -> "WITH"
   | Parser.EXCEPTION -> "EXCEPTION"

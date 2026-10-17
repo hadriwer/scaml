@@ -7,6 +7,16 @@ syntax and the standard library may still change between minor versions.
 
 ### Language
 
+- **Breaking**: `fn` without any parameter is no longer a function taking
+  `()`, so that functions can be η-reduced as in OCaml (#11): `fn triple {
+  mul 3 }` is `fn triple x { mul 3 x }`. Its body must then be a function
+  (`fn answer { 6 * 7 }` is an error: a constant is a `let`). A function
+  taking nothing says so: `fn hello () { .. }`, and so does `main`, `fn
+  main () { .. }` (`fn main { .. }` is an error saying it).
+- `function | p1 -> e1 | p2 -> e2`, OCaml's `function`: matches its one
+  argument, `^x -> match x { .. }` without naming it. With η-reduction:
+  `fn size { function | Leaf -> 0 | Node (l, _, r) -> size l + 1 + size r
+  }`.
 - An impl can name its type's parameters, to give the trait's types in
   terms of them: `impl iterable of (k, v) Hashtbl.t { type a = (k, v) ..
   }`. Such an impl can use a trait on each parameter (`showable of (k, v)
@@ -89,7 +99,7 @@ syntax and the standard library may still change between minor versions.
   is a function, its arguments aren't), and so do the standard library's
   functions passed as values; types after `of` are colored as types.
   Parameters of indexing operators (`op []+= a i v`) are no longer taken
-  for something else.
+  for something else. `function` is highlighted as a keyword.
 
 ### Fixed
 

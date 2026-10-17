@@ -3,7 +3,7 @@
 // left comb: every node has only a left child (the worst case for `@`)
 fn comb n { fold_left (^t i -> Node (t, i, Leaf)) Leaf (0..n) }
 
-fn main {
+fn main () {
   let t = Node (Node (Leaf, 1, Leaf), 2, Node (Node (Leaf, 4, Leaf), 3, Leaf));
   println t;
   println (sum 0 t);

@@ -1,6 +1,6 @@
 #use "stdlib/matrix.scaml"
 
-fn main {
+fn main () {
     let m = init_matrix 3 3 (^i j -> i * 3 + j);
     println m;
     println (transpose m);

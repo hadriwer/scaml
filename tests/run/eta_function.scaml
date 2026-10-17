@@ -1,0 +1,37 @@
+// η-reduction (#11): `fn` without parameters names its body; and `function`.
+type a tree { Leaf | Node of a tree, a, a tree }
+
+fn mul a b { a * b }
+fn triple { mul 3 }                   // η-reduced: `fn triple x { mul 3 x }`
+fn hello () { println "hello" }
+let answer = 6 * 7;                   // a constant is a `let`
+
+// recursive, η-reduced, with `function`
+fn size { function | Leaf -> 0 | Node (l, _, r) -> size l + 1 + size r }
+
+fn depth {
+  function
+  | Leaf -> 0
+  | Node (l, _, r) -> 1 + maxn (depth l) (depth r)
+}
+
+// the inner `function` takes the cases after it, unless parenthesized
+fn classify {
+  function
+  | Some x -> (function | 0 -> "zero" | _ -> "other") x
+  | None -> "none"
+}
+
+fn main () {
+  hello ();
+  println (triple 5);
+  println answer;
+  println (size (Node (Node (Leaf, 1, Leaf), 2, Leaf)));
+  println (map (function | Some x -> x | None -> 0) [Some 1; None; Some 3]);
+  let first = function (a, _) -> a;
+  println (first ("x", 2));
+  fn local_sq { ^x -> x * x }
+  println (local_sq 9);
+  println (depth (Node (Node (Leaf, 1, Leaf), 2, Leaf)));
+  println (map classify [Some 0; Some 5; None]);
+}

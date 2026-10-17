@@ -4,7 +4,7 @@ fn safe_div a b {
     with { | Division_by_zero -> 0 }
 }
 
-fn main {
+fn main () {
     println (safe_div 10 2);
     println (safe_div 1 0);
     let r = try failwith "boom" with { | Failure msg -> msg };

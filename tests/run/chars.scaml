@@ -1,5 +1,5 @@
 // char literals: any character, OCaml's escapes; `!=` is `==`'s negation
-fn main {
+fn main () {
   let x = "1  2 3";
   let spl = x |> String.split_on_char ' ' |> List.filter ((!=) "") |> List.map int_of_string;
   println spl;

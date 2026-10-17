@@ -1,6 +1,6 @@
 #use "stdlib/dfa.scaml"
 
-fn main {
+fn main () {
   let d = init_dfa 0 [1] [(0, "a", 0); (0, "b", 1); (1, "a", 1); (1, "b", 0)];
   println d;
   println (match_pattern d "abaaaaaaaaabaaaab");

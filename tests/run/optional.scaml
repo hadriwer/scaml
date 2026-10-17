@@ -10,7 +10,7 @@ fn foo2 ?u v { match u {
   | None -> println ("Alone : " + (to_string v))
 }}
 
-fn main {
+fn main () {
     fn local ?(k=100) a b { k * a + b }
     let a = 10;
     println (foo x=1 2);

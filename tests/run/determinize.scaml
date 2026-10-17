@@ -1,6 +1,6 @@
 #use "stdlib/dfa.scaml"
 
-fn main {
+fn main () {
   // words over {a, b} ending with "ba"
   let d = determinize 0 [2] [(0, "a", 0); (0, "b", 0); (0, "b", 1); (1, "a", 2)];
   println d;

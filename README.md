@@ -12,7 +12,7 @@ fn length l {
     fold_left (^acc e -> 1 + acc) 0 l
 }
 
-fn main {
+fn main () {
     println (length [1; 2; 3]);
 }
 ```

@@ -163,6 +163,16 @@ F = [ "odd" ]
 false
 Some "odd"
 true
+=== run/eta_function.scaml
+hello
+15
+42
+2
+[ 1; 0; 3 ]
+x
+81
+2
+[ "zero"; "other"; "none" ]
 === run/exceptions.scaml
 5
 0
@@ -332,12 +342,21 @@ to_char : unsupported on list.
 int 5
 point 1,2
 b
+=== errors/eta_not_function.scaml
+File "errors/eta_not_function.scaml", line 2, characters 0-19:
+Error: `answer` has no parameters, so it must be a function itself (η-reduced, as `fn triple { mul 3 }`), but its type is `int`.
+       A function taking nothing takes `()`: `fn answer () { ... }`; a constant is a `let`: `let answer = ...;`
+exit 1
 === errors/impl_one_param_dict.scaml
 File "errors/impl_one_param_dict.scaml", lines 1-4, characters 0-1:
 Error: This impl uses trait `showable` on its parameter `k` only: with several parameters, it must use one on each of them
 exit 1
+=== errors/main_without_unit.scaml
+File "errors/main_without_unit.scaml", lines 2-4, characters 0-1:
+Error: `main` takes `()`: write `fn main () { ... }`
+exit 1
 === errors/nested_clone_type_error.scaml
-File "errors/nested_clone_type_error.scaml", line 8, characters 19-28:
+File "errors/nested_clone_type_error.scaml", line 8, characters 22-31:
 Error: This call to `construct` does not type-check: its arguments have types string
 File "errors/nested_clone_type_error.scaml", line 4, characters 30-35:
   in `construct`: This expression has type char but an expression was expected of type string
@@ -347,7 +366,7 @@ File "errors/no_impl.scaml", line 3, characters 13-16:
 Error: No impl of `[]` (trait `indexable`) for list, int
 exit 1
 === errors/no_main.scaml
-errors/no_main.scaml: missing entry point (expected `fn main() { ... }`)
+errors/no_main.scaml: missing entry point (expected `fn main () { ... }`)
 exit 1
 === errors/syntax.scaml
 File "errors/syntax.scaml", line 2, characters 12-13:

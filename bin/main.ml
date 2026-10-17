@@ -2771,6 +2771,29 @@ let drop_unused_generics env methods (method_names : string list) (structure : P
   let mapper = { Ast_mapper.default_mapper with expr } in
   mapper.structure mapper structure
 
+(* A `fn` without parameters (marked by lib/parser.mly) must be a function,
+   η-reduced (`fn triple { mul 3 }`): one whose body is a plain value (`fn
+   answer { 6 * 7 }`) is either missing its `()` or a constant (#11). A
+   type still unknown (a variable) may be a function: let through. *)
+let check_eta (typed : Typedtree.structure) =
+  let value_binding (it : Tast_iterator.iterator) (vb : Typedtree.value_binding) =
+    if List.exists (fun (a : Parsetree.attribute) -> a.attr_name.txt = "scaml.eta") vb.vb_attributes then begin
+      match Types.get_desc (Ctype.expand_head vb.vb_expr.exp_env vb.vb_expr.exp_type), vb.vb_pat.pat_desc with
+      | (Tarrow _ | Tvar _), _ -> ()
+      | _, Tpat_var (_, { txt = name; loc }, _) ->
+        Location.print_report Format.err_formatter
+          (Location.errorf ~loc
+             "`%s` has no parameters, so it must be a function itself (η-reduced, as `fn triple { mul 3 }`), but its type is `%s`.@ \
+              A function taking nothing takes `()`: `fn %s () { ... }`; a constant is a `let`: `let %s = ...;`"
+             name (Format.asprintf "%a" Printtyp.type_expr vb.vb_expr.exp_type) name name);
+        exit 1
+      | _ -> ()
+    end;
+    Tast_iterator.default_iterator.value_binding it vb
+  in
+  let it = { Tast_iterator.default_iterator with value_binding } in
+  it.structure it typed
+
 let read_file filename = In_channel.with_open_bin filename In_channel.input_all
 
 (* Parses one .scaml source with our own lexer/parser, with the same error
@@ -2980,9 +3003,26 @@ let () =
     in
 
     if not (has_main user_structure) then begin
-      Printf.eprintf "%s: missing entry point (expected `fn main() { ... }`)\n" filename;
+      Printf.eprintf "%s: missing entry point (expected `fn main () { ... }`)\n" filename;
       exit 1
     end;
+    (* `fn main { .. }`, without `()`, is no function (#11): its body would
+       run as `main` is defined, and `main ()` fail far from it. *)
+    List.iter
+      (fun (item : Parsetree.structure_item) ->
+        match item.pstr_desc with
+        | Pstr_value (_, vbs) ->
+          List.iter
+            (fun (vb : Parsetree.value_binding) ->
+              match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
+              | Ppat_var { txt = "main"; loc }, desc when (match desc with Pexp_function _ -> false | _ -> true) ->
+                Location.print_report Format.err_formatter
+                  (Location.error ~loc "`main` takes `()`: write `fn main () { ... }`");
+                exit 1
+              | _ -> ())
+            vbs
+        | _ -> ())
+      user_structure;
     Compmisc.init_path ();
     let env = Compmisc.initial_env () in
 
@@ -2991,6 +3031,7 @@ let () =
     collect_user_type_names user_structure;
     (* The resolved structure, once it type-checked as a whole. *)
     let typechecked : Parsetree.structure option ref = ref None in
+    let typed_final : Typedtree.structure option ref = ref None in
     let user_structure =
       try
       if trait_methods = [] then user_structure
@@ -3074,7 +3115,7 @@ let () =
         let resolved = timed "drop unused generics" (fun () -> drop_unused_generics env trait_methods method_names resolved) in
         let typechecks s =
           match Typemod.type_structure env (s @ [ entry_point ]) with
-          | _ -> typechecked := Some s; true
+          | (typed, _, _, _, _) -> typechecked := Some s; typed_final := Some typed; true
           | exception _ -> false
         in
         if timed "check resolved" (fun () -> typechecks resolved) then resolved
@@ -3128,10 +3169,13 @@ let () =
     (match !typechecked with
      | Some s when s == user_structure -> ()
      | _ ->
-       (try timed "final typecheck" (fun () -> ignore (Typemod.type_structure env full_structure))
+       (try timed "final typecheck" (fun () ->
+              let typed, _, _, _, _ = Typemod.type_structure env full_structure in
+              typed_final := Some typed)
         with exn ->
           report_type_error exn;
           exit 1));
+    Option.iter check_eta !typed_final;
     if verbose then print_endline "Typecheck OK";
 
     (* Only after the structure has been type-checked as a whole: the user's

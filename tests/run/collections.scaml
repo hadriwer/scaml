@@ -1,7 +1,7 @@
 // iterable, foldable, mappable, quantifiable, sizable, concatenable
 fn total acc c { fold_left (+) acc c }
 
-fn main {
+fn main () {
     let l = [1; 2; 3; 4];
     let a = [|1.; 2.; 3.|];
     println (total 0 l);

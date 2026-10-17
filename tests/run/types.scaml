@@ -31,7 +31,7 @@ trait named {
 impl named of int { fn name i { "int " + to_string i } }
 impl named of point { fn name p { "point " + to_string p.x + "," + to_string p.y } }
 
-fn main {
+fn main () {
     let p = { x = 1; y = 2 };
     println (p.x + p.y);
     println (area (Circle 1.));
