@@ -5,8 +5,9 @@ language with a lightweight, Rust-inspired syntax that compiles to OCaml.
 
 ## Table of contents
 
-0. [Introduction](00_introduction.md): why SCaml exists, and how traits give
-   you one `+`, one `print` and one `fold_left` for every type.
+0. [Introduction](00_introduction.md): why SCaml exists, how traits give
+   you one `+`, one `print` and one `fold_left` for every type, and impls
+   on nested types.
 1. [Functions and operators](01_functions.md): defining functions and
    operators, your first program, recursion, anonymous functions,
    η-reduction and `function`.

@@ -1,0 +1,21 @@
+// Inside a generic impl, an `X.a array array` takes the impl on `e array
+// array`, whatever `X.a` turns out to be.
+
+impl showable of e array array {
+  fn print m { iter (^row -> { print "| "; iter (^x -> { print x; print " " }) row; println "|" }) m }
+  fn println m { print m }
+}
+
+type a grid { cells of a array array }
+
+impl showable of grid {
+  fn print g { println "grid:"; print g.cells }
+  fn println g { print g }
+}
+
+fn main () {
+  println [| [| 1; 2 |]; [| 3; 4 |] |];
+  println { cells = [| [| 1.5; 2.5 |] |] };
+  println { cells = [| [| "a" |] |] };
+  println [| 5; 6 |];
+}

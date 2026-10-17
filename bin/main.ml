@@ -306,6 +306,54 @@ type type_tree = Ty of string * type_tree list
 
 let ty_name (Ty (n, _)) = n
 
+(* The impl on a nested type (`impl conversionnable_matrix of e array
+   array`, see lib/impl_pattern.ml) of [trait] for the type [tree], if one
+   matches it: the most specific, its module and what its parameters stand
+   for here, in order (`int` for `e`, for an `int array array`). Any such
+   impl is more specific than the usual one on the outermost type alone
+   (`impl .. of array`); two as specific as each other are ambiguous. *)
+(* The expression being dispatched, for an error about its impls. *)
+let dispatch_loc = ref Location.none
+
+(* [bind pattern tree] gives what each of [pattern]'s parameters stands for
+   in [tree], if it matches: over a [type_tree], or an [xtree] (see
+   [find_impl_x]). *)
+let find_impl_with (bind : SCaml.Impl_pattern.t -> 'a -> (string * 'a) list -> (string * 'a) list option) trait (tree : 'a) =
+  let matching =
+    List.filter_map
+      (fun (impl : SCaml.Impl_pattern.impl) ->
+        Option.map (fun bound -> (impl, bound)) (bind impl.pattern tree []))
+      (SCaml.Impl_pattern.impls_of trait)
+  in
+  let spec ((impl : SCaml.Impl_pattern.impl), _) = SCaml.Impl_pattern.specificity impl.pattern in
+  match List.sort (fun a b -> compare (spec b) (spec a)) matching with
+  | [] -> None
+  | ((best : SCaml.Impl_pattern.impl), bound) :: rest ->
+    (match List.find_opt (fun m -> spec m = spec (best, bound)) rest with
+     | Some ((other : SCaml.Impl_pattern.impl), _) ->
+       raise (Location.Error (Location.error ~loc:!dispatch_loc
+         (Printf.sprintf "ambiguous impls of trait `%s`: `%s` and `%s` both apply, and neither is more specific"
+            trait (SCaml.Impl_pattern.to_string best.pattern) (SCaml.Impl_pattern.to_string other.pattern))))
+     | None -> Some (best.module_name, List.map (fun p -> List.assoc p bound) best.params))
+
+let find_impl trait (tree : type_tree) : (string * type_tree list) option =
+  let rec bind (p : SCaml.Impl_pattern.t) (Ty (n, args) as t) acc =
+    match p with
+    | Var v -> Some ((v, t) :: acc)
+    | Con (c, ps) when c = n && List.compare_lengths ps args = 0 ->
+      List.fold_left2 (fun acc p t -> Option.bind acc (bind p t)) (Some acc) ps args
+    | Con _ -> None
+  in
+  find_impl_with bind trait tree
+
+(* The impl of [trait] for [Ty (n, args)] and the types its functor
+   parameter's fields stand for: one on the nested type if any matches,
+   else the usual one, named after [n], with [args]. *)
+let impl_for trait (Ty (n, args) as tree) =
+  match find_impl trait tree with
+  | Some found -> found
+  | None -> (impl_module_name trait n, args)
+
 (* Top-level types the program itself declares (`type test_struct { ... }`),
    which an `impl ... of test_struct` can target just like a predefined one.
    Filled once from the full structure before dispatch starts. *)
@@ -358,6 +406,19 @@ let collect_user_type_names (structure : Parsetree.structure) =
         List.iter (fun (d : Parsetree.type_declaration) -> Hashtbl.replace user_type_names d.ptype_name.txt ()) decls
       | Pstr_module { pmb_name = { txt = Some name; _ }; pmb_expr; _ } ->
         add_qualified name;
+        (* an impl on a nested type: the module types of its pattern *)
+        Hashtbl.iter
+          (fun _ (impl : SCaml.Impl_pattern.impl) ->
+            if impl.module_name = name then begin
+              let rec go = function
+                | SCaml.Impl_pattern.Var _ -> ()
+                | Con (c, args) ->
+                  if SCaml.Type_name.is_qualified c then Hashtbl.replace qualified_type_names c ();
+                  List.iter go args
+              in
+              go impl.pattern
+            end)
+          SCaml.Impl_pattern.table;
         (match pmb_expr.pmod_desc with
          | Pmod_functor (Named (_, { pmty_desc = Pmty_signature sigs; _ }), _) ->
            Hashtbl.replace impl_functor_params name
@@ -611,11 +672,14 @@ let prune_for_probe (user_file : string) (structure : Parsetree.structure) : Par
       | _ -> ())
     structure;
   let overloads = collect_overloads structure in
+  (* `conversionnable_matrix__array` -> [ "conversionnable_matrix"; "array" ]:
+     at each `__`, not stopping at a single `_`. *)
   let rec split_on s =
-    match String.index_opt s '_' with
-    | Some j when j + 1 < String.length s && s.[j + 1] = '_' ->
-      String.sub s 0 j :: split_on (String.sub s (j + 2) (String.length s - j - 2))
-    | _ -> [ s ]
+    let n = String.length s in
+    let rec find i = if i + 1 >= n then None else if s.[i] = '_' && s.[i + 1] = '_' then Some i else find (i + 1) in
+    match find 0 with
+    | Some j -> String.sub s 0 j :: split_on (String.sub s (j + 2) (n - j - 2))
+    | None -> [ s ]
   in
   (* What would make an item worth keeping without anything naming it:
      `Some (trigger, types)` for an impl module (its trait) or an overload
@@ -624,7 +688,16 @@ let prune_for_probe (user_file : string) (structure : Parsetree.structure) : Par
     match item.pstr_desc with
     | Pstr_module { pmb_name = { txt = Some name; _ }; _ } ->
       (match split_on (String.uncapitalize_ascii name) with
-       | t :: tys when tys <> [] && Hashtbl.mem traits t -> Some (t, tys)
+       | t :: tys when tys <> [] && Hashtbl.mem traits t ->
+         (* an impl on a nested type: every type of its pattern *)
+         (match List.find_opt (fun (i : SCaml.Impl_pattern.impl) -> i.module_name = name) (SCaml.Impl_pattern.impls_of t) with
+          | Some impl ->
+            let rec types = function
+              | SCaml.Impl_pattern.Var _ -> []
+              | Con (c, args) -> c :: List.concat_map types args
+            in
+            Some (t, types impl.pattern)
+          | None -> Some (t, tys))
        | _ -> None)
     | Pstr_value (_, [ { pvb_pat = { ppat_desc = Ppat_var { txt; _ }; _ }; _ } ]) ->
       Hashtbl.fold (fun m (tys, fname) acc -> if fname = txt then Some (m, tys) else acc) overloads None
@@ -694,6 +767,21 @@ let path_is_x_field (path : Path.t) : string option =
 type xtree =
   | XField of string
   | XCon of string * xtree list
+
+(* [find_impl] over a type built on the enclosing impl's functor parameter
+   (`X.a array array`): a field, still unknown, only matches a parameter.
+   An impl that needs it to be some type (`int array` for an `X.a array`)
+   can't be told to apply here, inside generic code: the usual impl is
+   used. *)
+let find_impl_x trait (tree : xtree) : (string * xtree list) option =
+  let rec bind (p : SCaml.Impl_pattern.t) t acc =
+    match p, t with
+    | Var v, _ -> Some ((v, t) :: acc)
+    | Con (c, ps), XCon (n, args) when c = n && List.compare_lengths ps args = 0 ->
+      List.fold_left2 (fun acc p t -> Option.bind acc (bind p t)) (Some acc) ps args
+    | Con _, _ -> None
+  in
+  find_impl_with bind trait tree
 
 let rec xtree_has_field = function
   | XField _ -> true
@@ -836,9 +924,23 @@ let record_trait_call loc name trait_name env ty =
    walked with, and what walking it added (dispatches, requirements,
    misses). See [harvest_dispatch]. *)
 let harvest_cache :
-    (Typedtree.structure_item * int * ((string * int * int) * dispatch_target) list * (string * (string * string)) list
-     * (Location.t * string * string * string list) list) list ref =
+    (Typedtree.structure_item * (int * int * bool) * ((string * int * int) * dispatch_target) list * (string * (string * string)) list
+     * (Location.t * string * string * string list) list * string list) list ref =
   ref []
+
+(* The impl modules whose body still holds a trait call left to dispatch
+   (not one to the impl's own method): what they need from their functor
+   parameter may still grow -- `print x` on an element deep in callbacks is
+   only found once those are dispatched. A call that would pass one of them
+   a bare type ([FieldStruct]) waits until it's done, rather than miss the
+   dictionary found later. Unless nothing else moves: then
+   [defer_to_pending] is off for a round. Found by [harvest_dispatch] as it
+   walks them, before the code using them. [pending_version] changes with
+   [defer_to_pending], for [harvest_cache]. *)
+let pending_impls : (string, unit) Hashtbl.t = Hashtbl.create 16
+let defer_to_pending = ref true
+let pending_version = ref 0
+let deferred_count = ref 0
 
 (* The items (by location) the last [harvest_dispatch] really walked: only
    those can have something new to rewrite. *)
@@ -870,7 +972,7 @@ let harvest_dispatch ?(cache = false)
     methods;
   let table : (string * int * int, dispatch_target) Hashtbl.t = Hashtbl.create 16 in
   (* What the item being walked adds, for [harvest_cache]. *)
-  let entry_log = ref [] and req_log = ref [] in
+  let entry_log = ref [] and req_log = ref [] and pending_log = ref [] in
   let record_entry key target =
     Hashtbl.replace table key target;
     entry_log := (key, target) :: !entry_log
@@ -953,7 +1055,18 @@ let harvest_dispatch ?(cache = false)
      or the generic element's impl for a call like `print "[ "` / `print e`
      inside its own body. *)
   let current_impl_module = ref None in
-  let target_is_self mod_name = !current_impl_module = Some mod_name in
+  let self_hit = ref false in
+  let pending_check = ref None in
+  let target_is_self mod_name =
+    let self = !current_impl_module = Some mod_name in
+    if self then self_hit := true;
+    self
+  in
+  (* See [pending_impls]. *)
+  let defers mod_name =
+    !defer_to_pending && Hashtbl.mem pending_impls mod_name && not (target_is_self mod_name)
+    && (incr deferred_count; true)
+  in
   (* The functor parameter a value of type `X.<field>` takes its
      dictionary from, in the impl being walked. *)
   let dict_param field =
@@ -1055,8 +1168,8 @@ let harvest_dispatch ?(cache = false)
      the impl module name, those free names' resolutions, and the target. *)
   let concrete_target name trait_name arity (arg_tys : (Env.t * Types.type_expr) list) type_name arg_trees =
     let other_names = other_names_of trait_name in
+    let mod_name, arg_trees = impl_for trait_name (Ty (type_name, arg_trees)) in
     let arg_type_names = List.map ty_name arg_trees in
-    let mod_name = impl_module_name trait_name type_name in
     let params =
       match Hashtbl.find_opt impl_functor_params mod_name with
       | Some ps -> ps
@@ -1111,8 +1224,8 @@ let harvest_dispatch ?(cache = false)
            an `int array array`) is itself a functor-shaped
            impl: apply it, recursively, to the dictionary its
            own element needs, rather than passing it bare. *)
-        let rec dict_of needed_trait (Ty (n, args)) =
-          let dict_mod = impl_module_name needed_trait n in
+        let rec dict_of needed_trait tree =
+          let dict_mod, args = impl_for needed_trait tree in
           Dict (dict_mod, List.map2 dict_of (arg_traits dict_mod needed_trait (List.length args)) args)
         in
         (match full_fields, Hashtbl.find_opt dict_requirements mod_name, arg_trees with
@@ -1125,6 +1238,7 @@ let harvest_dispatch ?(cache = false)
            Some (Functored (mod_name, DictModule (dict_of needed_trait elem_tree)))
          | [ (only_field, Concrete concrete_type) ], Some [ (dict_field, needed_trait) ], _ when dict_field = only_field ->
            Some (Functored (mod_name, DictModule (Dict (impl_module_name needed_trait concrete_type, []))))
+         | _ when defers mod_name -> None
          | _ -> Some (Functored (mod_name, FieldStruct full_fields)))
       else Some (Plain mod_name)
     in
@@ -1209,6 +1323,18 @@ let harvest_dispatch ?(cache = false)
             None
   in
   let expr (iter : Tast_iterator.iterator) (e : Typedtree.expression) =
+    dispatch_loc := e.exp_loc;
+    self_hit := false;
+    (* A trait call inside an impl, left without a target this time (and not
+       to the impl's own method): the impl is pending. *)
+    (match e.exp_desc, !current_impl_module with
+     | Texp_apply _, Some m when cache ->
+       let head, _ = flatten_apply e in
+       (match head.exp_desc with
+        | Texp_ident (_, { txt = Longident.Lident name; _ }, _) when Hashtbl.mem trait_of_name name ->
+          pending_check := Some (m, loc_key head.exp_loc)
+        | _ -> pending_check := None)
+     | _ -> pending_check := None);
     (match e.exp_desc with
      | Texp_apply _ ->
        let head, all_args = flatten_apply e in
@@ -1306,8 +1432,8 @@ let harvest_dispatch ?(cache = false)
                 (* A generated tuple impl: the functor applied, right here, to
                    each component's own dictionary (recursively, so a tuple
                    of arrays or of tuples works too). *)
-                let rec dict_for trait (Ty (n, args)) =
-                  let m = impl_module_name trait n in
+                let rec dict_for trait tree =
+                  let m, args = impl_for trait tree in
                   Dict (m, List.map2 dict_for (arg_traits m trait (List.length args)) args)
                 in
                 record_entry (loc_key head.exp_loc) (DictCall (dict_for trait_name (Ty (type_name, arg_trees))))
@@ -1363,8 +1489,8 @@ let harvest_dispatch ?(cache = false)
                    a component of the impl's own element type takes its
                    dictionary from the impl's functor parameter `X` itself,
                    which [upgrade_dict_impls] then turns into that trait. *)
-                let rec dict_for trait (Ty (n, args)) =
-                  let m = impl_module_name trait n in
+                let rec dict_for trait tree =
+                  let m, args = impl_for trait tree in
                   Dict (m, List.map2 dict_for (arg_traits m trait (List.length args)) args)
                 in
                 let comp_dicts =
@@ -1391,10 +1517,30 @@ let harvest_dispatch ?(cache = false)
                  | Some mod_name -> add_dict_requirement mod_name (field, trait_name)
                  | None -> ())
               | `ContainerXTree (base, elem) ->
-                let mod_name = impl_module_name trait_name base in
+                (* An impl on the nested type, if one is sure to apply
+                   (`e array array` for an `X.a array array`): its own
+                   parameters' types, else the usual impl's element. *)
+                let mod_name, bound =
+                  match find_impl_x trait_name (XCon (base, [ elem ])) with
+                  | Some found -> found
+                  | None -> (impl_module_name trait_name base, [ elem ])
+                in
+                let rec dict_for trait = function
+                  | XField field ->
+                    (match !current_impl_module with
+                     | Some m -> add_dict_requirement m (field, trait)
+                     | None -> ());
+                    Dict (dict_param field, [])
+                  | XCon _ as t ->
+                    let m, args = match find_impl_x trait t with Some found -> found | None -> (match t with XCon (n, args) -> (impl_module_name trait n, args) | XField _ -> assert false) in
+                    Dict (m, List.map2 dict_for (arg_traits m trait (List.length args)) args)
+                in
                 if not (target_is_self mod_name) then
-                  (match Hashtbl.find_opt dict_requirements mod_name with
-                   | Some ((_, needed_trait) :: _) ->
+                  (match Hashtbl.find_opt dict_requirements mod_name, bound with
+                   | Some reqs, _ when multi_complete mod_name reqs ->
+                     record_entry (loc_key head.exp_loc)
+                       (DictCall (Dict (mod_name, List.map2 dict_for (arg_traits mod_name trait_name (List.length bound)) bound)))
+                   | Some ((_, needed_trait) :: _), [ elem ] ->
                      (* That impl needs a value from its element (e.g.
                         `showable of array` printing each one): pass the
                         element's own dictionary, built down to the
@@ -1402,22 +1548,17 @@ let harvest_dispatch ?(cache = false)
                         must satisfy that trait too (`print m.rows` on an
                         `X.a array array` -> `Showable__array
                         (Showable__array (X))`). *)
-                     let rec dict_for trait = function
-                       | XField field ->
-                         (match !current_impl_module with
-                          | Some m -> add_dict_requirement m (field, trait)
-                          | None -> ());
-                         Dict (dict_param field, [])
-                       | XCon (n, args) ->
-                         let m = impl_module_name trait n in
-                         Dict (m, List.map2 dict_for (arg_traits m trait (List.length args)) args)
-                     in
                      record_entry (loc_key head.exp_loc) (Functored (mod_name, DictModule (dict_for needed_trait elem)))
-                   | Some [] | None ->
-                     (match all_param_names other_names 1 with
-                      | [ only_field ] ->
-                        record_entry (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaXTree elem) ]))
-                      | _ -> ()))
+                   | (Some [] | None), _ ->
+                     let params =
+                       match Hashtbl.find_opt impl_functor_params mod_name with
+                       | Some ps -> ps
+                       | None -> all_param_names other_names 1
+                     in
+                     if List.compare_lengths params bound = 0 && not (defers mod_name) then
+                       record_entry (loc_key head.exp_loc)
+                         (Functored (mod_name, FieldStruct (List.map2 (fun p t -> (p, ViaXTree t)) params bound)))
+                   | _ -> ())
               | `ContainerX (base, field) ->
                 let mod_name = impl_module_name trait_name base in
                 if not (target_is_self mod_name) then
@@ -1432,7 +1573,7 @@ let harvest_dispatch ?(cache = false)
                       | None -> ());
                      record_entry (loc_key head.exp_loc)
                        (Functored (mod_name, DictModule (Dict (dict_param field, []))))
-                   | _, [ only_field ] ->
+                   | _, [ only_field ] when not (defers mod_name) ->
                      record_entry (loc_key head.exp_loc) (Functored (mod_name, FieldStruct [ (only_field, ViaX field) ]))
                    | _ -> ());
                 (* The container's element type is also `field` -- scan any
@@ -1526,6 +1667,14 @@ let harvest_dispatch ?(cache = false)
               | _ -> ()))
         | _ -> ())
      | _ -> ());
+    (match !pending_check with
+     | Some (m, key) when (not (Hashtbl.mem table key)) && not !self_hit ->
+       if not (Hashtbl.mem pending_impls m) then begin
+         Hashtbl.replace pending_impls m ();
+         pending_log := m :: !pending_log
+       end
+     | _ -> ());
+    pending_check := None;
     Tast_iterator.default_iterator.expr iter e
   in
   (* Tracks [current_impl_module] while walking into an `impl`'s module
@@ -1543,7 +1692,12 @@ let harvest_dispatch ?(cache = false)
      see [probe_typecheck]'s cache), with the same requirements as when it
      was last walked (they only grow: their count tells), gives the same
      results again, replayed instead of walked. *)
-  let req_count () = Hashtbl.fold (fun _ reqs n -> n + 1 + List.length reqs) dict_requirements 0 in
+  if cache then Hashtbl.reset pending_impls;
+  let req_count () =
+    ( Hashtbl.fold (fun _ reqs n -> n + 1 + List.length reqs) dict_requirements 0,
+      Hashtbl.length pending_impls + (1000 * !pending_version),
+      !defer_to_pending )
+  in
   let previous = !harvest_cache in
   let walked = ref [] in
   let next_cache =
@@ -1551,21 +1705,23 @@ let harvest_dispatch ?(cache = false)
       (fun (ti : Typedtree.structure_item) ->
         let count = req_count () in
         match
-          if cache then List.find_opt (fun (ti', count', _, _, _) -> ti' == ti && count' = count) previous else None
+          if cache then List.find_opt (fun (ti', count', _, _, _, _) -> ti' == ti && count' = count) previous else None
         with
-        | Some ((_, _, entries, reqs, misses) as cached) ->
+        | Some ((_, _, entries, reqs, misses, pending) as cached) ->
           List.iter (fun (key, target) -> Hashtbl.replace table key target) (List.rev entries);
           List.iter (fun (m, req) -> add_dict_requirement m req) (List.rev reqs);
           overload_misses := misses @ !overload_misses;
+          List.iter (fun m -> Hashtbl.replace pending_impls m ()) pending;
           cached
         | None ->
           entry_log := [];
           req_log := [];
+          pending_log := [];
           let misses_before = !overload_misses in
           iterator.structure_item iterator ti;
           walked := loc_key ti.str_loc :: !walked;
           let rec added l = if l == misses_before then [] else match l with x :: rest -> x :: added rest | [] -> [] in
-          (ti, count, !entry_log, !req_log, added !overload_misses))
+          (ti, count, !entry_log, !req_log, added !overload_misses, !pending_log))
       typed.str_items
   in
   if cache then begin
@@ -3081,7 +3237,14 @@ let () =
             else (match rewrite_dispatch table [ item ] with [ item' ] when item' <> item -> Some item' | _ -> None)
           | _ -> None
         in
+        (* Set when a round could only wait (see [pending_impls]): the next
+           one doesn't. *)
+        let skip_defer_next = ref false in
         let rec rounds n dict_requirements structure =
+          let defer = not !skip_defer_next in
+          skip_defer_next := false;
+          if defer <> !defer_to_pending then (defer_to_pending := defer; incr pending_version);
+          deferred_count := 0;
           let local = not !default_free_type_vars in
           if local then probe_refine := Some (refine dict_requirements);
           let typed_probe =
@@ -3109,6 +3272,10 @@ let () =
           else
             match timed "monomorphize" (fun () -> monomorphize method_names mono_cache mono_counter typed_probe rewritten) with
             | mono, true -> rounds (n - 1) dict_requirements mono
+            | _, false when !deferred_count > 0 && !defer_to_pending ->
+              (* only waiting on impls that won't move any more: go on *)
+              skip_defer_next := true;
+              rounds (n - 1) dict_requirements rewritten
             | _, false -> rewritten
         in
         let resolved = rounds 32 (Hashtbl.create 16) user_structure in

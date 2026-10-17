@@ -253,6 +253,26 @@ true
 3
 buf
 2
+=== run/nested_impls_generic.scaml
+| 1 2 |
+| 3 4 |
+grid:
+| 1.5 2.5 |
+grid:
+| "a" |
+[| 5; 6 |]
+=== run/nested_impls.scaml
+(3, 1)
+(3, 2)
+(2, 1)
+(1, 3)
+ints:2
+[| "a"; "b" |]
+[| ints:1; ints:2 |]
+(ints:1, [| "x" |])
+[| [| ints:1 |] |]
+a table of strings
+a table
 === run/optional.scaml
 3
 3
@@ -360,6 +380,22 @@ File "errors/nested_clone_type_error.scaml", line 8, characters 22-31:
 Error: This call to `construct` does not type-check: its arguments have types string
 File "errors/nested_clone_type_error.scaml", line 4, characters 30-35:
   in `construct`: This expression has type char but an expression was expected of type string
+exit 1
+=== errors/nested_impl_ambiguous.scaml
+File "errors/nested_impl_ambiguous.scaml", line 6, characters 69-75:
+Error: ambiguous impls of trait `named`: `(int, v) Hashtbl.t` and `(k, string) Hashtbl.t` both apply, and neither is more specific
+exit 1
+=== errors/nested_impl_ctor_trait.scaml
+File "errors/nested_impl_ctor_trait.scaml", line 2, characters 0-89:
+Error: trait `mappable` is implemented for a type constructor (`impl mappable of array`), not for a nested type
+exit 1
+=== errors/nested_impl_mixed_params.scaml
+File "errors/nested_impl_mixed_params.scaml", line 4, characters 0-55:
+Error: name every parameter of the type, or none: `e array array`
+exit 1
+=== errors/nested_impl_overload.scaml
+File "errors/nested_impl_overload.scaml", line 2, characters 0-27:
+Error: an overloaded impl (`impl arithm of array, int`) takes one type per argument, not a nested type
 exit 1
 === errors/no_impl.scaml
 File "errors/no_impl.scaml", line 3, characters 13-16:

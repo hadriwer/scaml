@@ -1,0 +1,6 @@
+// Two impls as specific as each other, both applying, are ambiguous
+trait named { type a
+  fn name of a -> string }
+impl named of (int, v) Hashtbl.t { fn name _ { "int keys" } }
+impl named of (k, string) Hashtbl.t { fn name _ { "string values" } }
+fn main () { let h = Hashtbl.create 1; Hashtbl.add h 1 "a"; println (name h) }

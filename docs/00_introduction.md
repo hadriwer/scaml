@@ -109,6 +109,63 @@ every printable type, and a single `fold_left` for lists and arrays. Even
 > [!NOTE]
 > The standard library already provides this function as `sum`.
 
+## Impls on nested types
+
+An impl usually targets a type, `impl showable of array`, for every array.
+It can also target a **nested type**, written like a type, its parameters
+named: `e array array` (an array of arrays of anything), `int array` (an
+array of `int`s only), `(k, string) Hashtbl.t`. For a call, the **most
+specific** impl that applies is used: the one naming the most types.
+
+The standard library's `to_matrix` ([`stdlib/matrix.scaml`](../stdlib/matrix.scaml))
+is defined this way:
+
+```rust
+trait conversionnable_matrix {
+    type b a
+    fn to_matrix of a -> b matrix
+}
+
+// a vector: a column
+impl conversionnable_matrix of e array {
+    type b = e
+    fn to_matrix v { { arr = Array.map (^x -> [| x |]) v; shape = (len v, 1) } }
+}
+
+// rows: more specific, so used for an array of arrays
+impl conversionnable_matrix of e array array {
+    type b = e
+    fn to_matrix rows {
+        let cols = if len rows == 0 then 0 else len rows[0];
+        { arr = rows; shape = (len rows, cols) }
+    }
+}
+```
+
+```rust
+#use "stdlib/matrix.scaml"
+
+fn main () {
+    println (to_matrix [| 1; 2; 3 |]).shape;                  // (3, 1)
+    println (to_matrix [| [| 1; 2 |]; [| 3; 4 |] |]).shape;   // (2, 2)
+}
+```
+
+A few rules:
+
+- The impl gives the trait's other types in terms of its parameters
+  (`type b = e`).
+- Two impls as specific as each other that both apply are an error
+  (`(int, v) Hashtbl.t` and `(k, string) Hashtbl.t`, for an `(int, string)
+  Hashtbl.t`).
+- Inside generic code, where a type is only partly known (an impl on `a
+  grid` printing its `a array array`), an impl that needs a precise type
+  there (`float array array`) can't be told to apply: the more general one
+  is used. One whose pattern only has parameters there (`e array array`)
+  is.
+- Not for a trait on a type constructor (`type t of 1`, like `mappable`),
+  nor for an overloaded impl (`impl arithm of array, int`).
+
 ---
 
 [← Index](README.md) · [Next: Functions and operators →](01_functions.md)

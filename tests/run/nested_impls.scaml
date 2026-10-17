@@ -1,0 +1,45 @@
+#use "stdlib/matrix.scaml"
+// Impls on nested types: the most specific one whose pattern the type
+// matches is used.
+
+// `to_matrix` (stdlib/matrix.scaml): `e array` makes a column, the more
+// specific `e array array` takes the rows. (Its trait's name has a `_`:
+// its impls in the stdlib used to be dropped as unused.)
+
+// a concrete leaf: wins over core's `showable of array`, for int arrays only
+impl showable of int array {
+  fn print a { print "ints:"; print (Array.length a) }
+  fn println a { print a; println "" }
+}
+
+// a module's type, with a concrete leaf
+trait named {
+  type a
+  fn name of a -> string
+}
+
+impl named of (k, v) Hashtbl.t { fn name _ { "a table" } }
+impl named of (k, string) Hashtbl.t { fn name _ { "a table of strings" } }
+
+// generic: specialized at each call, then dispatched on the full type
+fn shape_of x { (to_matrix x).shape }
+
+fn main () {
+  println (to_matrix [| 1; 2; 3 |]).shape;
+  println (to_matrix [| [| 1; 2 |]; [| 3; 4 |]; [| 5; 6 |] |]).shape;
+  println (shape_of [| 1.5; 2.5 |]);
+  println (shape_of [| [| 'a'; 'b'; 'c' |] |]);
+
+  println [| 1; 2 |];
+  println [| "a"; "b" |];
+  println [| [| 1 |]; [| 2; 3 |] |];
+  println ([| 7 |], [| "x" |]);
+  println [| [| [| 1 |] |] |];
+
+  let h = Hashtbl.create 1;
+  Hashtbl.add h 1 "a";
+  println (name h);
+  let g = Hashtbl.create 1;
+  Hashtbl.add g 1 2;
+  println (name g);
+}

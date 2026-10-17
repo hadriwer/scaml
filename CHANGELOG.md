@@ -17,6 +17,12 @@ syntax and the standard library may still change between minor versions.
   argument, `^x -> match x { .. }` without naming it. With η-reduction:
   `fn size { function | Leaf -> 0 | Node (l, _, r) -> size l + 1 + size r
   }`.
+- Impls on nested types: `impl conversionnable_matrix of e array array`,
+  `impl showable of int array`, `impl named of (k, string) Hashtbl.t`. A
+  call uses the most specific impl that applies (`e array array` over `e
+  array` for an `int array array`); two as specific as each other are an
+  error. Also inside generic code, as long as the impl doesn't need a
+  precise type where it's still unknown.
 - An impl can name its type's parameters, to give the trait's types in
   terms of them: `impl iterable of (k, v) Hashtbl.t { type a = (k, v) ..
   }`. Such an impl can use a trait on each parameter (`showable of (k, v)
@@ -73,6 +79,9 @@ syntax and the standard library may still change between minor versions.
   `stdlib/btree.scaml` (`#use "stdlib/btree.scaml"`), with
   `infix_order`, `prefix_order`, `postfix_order` (in linear time), `iter`,
   `iteri` and `println` (drawn as a tree).
+- `to_matrix` (`stdlib/matrix.scaml`): a vector as a column, an array of
+  rows as a matrix (`conversionnable_matrix`, impls on `e array` and `e
+  array array`).
 - `stdlib/hashmap.scaml` (`#use "stdlib/hashmap.scaml"`): hash maps
   (`Hashtbl.t`), `hashmap_of_list`, `get`, `insert`, `update`, `keys`,
   `entries`..., `hm[k]`, `hm[k] = v`, `hm[k] += v` for any key type,
@@ -126,6 +135,13 @@ syntax and the standard library may still change between minor versions.
   `p[i]`) failed with "Unbound value `[]`".
 - The error for a call that doesn't type-check inside a nested function
   showed mangled types (`string] [get_trans : string -> _`).
+- A generic impl whose need for its elements' impl is only found late
+  (`println x` in a local function, or deep in callbacks) is no longer
+  applied too early: `println t` failed with "Modules do not match", e.g.
+  on a `btree`.
+- The impls of a trait whose name has a `_` (`conversionnable_matrix`)
+  were dropped from the standard library as unused: "No impl of
+  `to_matrix`".
 - No more "unused variable" warning from OCaml for a local function
   whose specialized copies replaced it.
 

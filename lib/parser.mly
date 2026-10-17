@@ -129,11 +129,35 @@ let known_types = [ "unit"; "int"; "float"; "string"; "bytes"; "bool"; "char" ]
    when parsed, so an impl further down sees it like `array`. *)
 let user_type_arity : (string, int) Hashtbl.t = Hashtbl.create 16
 
+let is_known_type name =
+  List.mem name known_types || List.mem name [ "array"; "list"; "option" ]
+  || Hashtbl.mem user_type_arity name || Type_name.is_qualified name
+
 let type_arity name =
   match name with
   | "array" | "list" | "option" -> 1
   | _ when Type_name.is_qualified name -> Option.value (Type_name.arity name) ~default:0
   | _ -> Option.value (Hashtbl.find_opt user_type_arity name) ~default:0
+
+(* What follows an impl's `of`, as a pattern over types (see
+   [Impl_pattern]): `array`, `e array`, `(k, v) Hashtbl.t`, `int array`,
+   `e array array`... The types apply from left to right, OCaml-style, to
+   what comes before them: [args] (`(k, v)`), else a name that isn't a
+   type, a parameter (`e`), else a type taking none (`int`). A type with
+   nothing before it gets unnamed parameters, `Var ""` (`array` alone). *)
+let mk_impl_pattern loc (args : Impl_pattern.t list) (names : string list) : Impl_pattern.t =
+  let error msg = raise (Location.Error (Location.error ~loc msg)) in
+  let apply cur name =
+    let arity = type_arity name in
+    match cur with
+    | [] when arity = 0 && not (is_known_type name) -> [ Impl_pattern.Var name ]
+    | [] -> [ Impl_pattern.Con (name, List.init arity (fun _ -> Impl_pattern.Var "")) ]
+    | _ when List.length cur = arity -> [ Impl_pattern.Con (name, cur) ]
+    | _ -> error (Printf.sprintf "`%s` takes %d type parameter(s), not %d" name arity (List.length cur))
+  in
+  match List.fold_left apply args names with
+  | [ p ] -> p
+  | _ -> error "a type is missing after the parameters: `(k, v) Hashtbl.t`"
 
 (* A name in a trait signature is always a TYPE NAME (concrete, e.g. `unit`,
    or abstract, e.g. `a`) -- never a type variable ['a]. A variable would let
@@ -874,13 +898,38 @@ item:
       Hashtbl.replace trait_vals name value_sigs;
       [ Ast_helper.Str.modtype ~loc
           (Ast_helper.Mtd.mk (Location.mkloc name loc) ~typ:(Ast_helper.Mty.signature (type_decls @ value_sigs))) ] }
+  (* `impl arithm of array array, int`: an overloaded impl takes one type
+     per argument, not a nested one. *)
+  | IMPL; IDENT; OF; impl_type; nonempty_list(impl_type); COMMA
+      { raise (Location.Error (Location.error ~loc:(mkloc $startpos $endpos)
+          "an overloaded impl (`impl arithm of array, int`) takes one type per argument, not a nested type")) }
   | IMPL; trait_name = IDENT; OF; ty = impl_type; COMMA; tys = separated_nonempty_list(COMMA, impl_type);
     LBRACE; methods = list(impl_item); RBRACE
       { mkoverloadimpl (mkloc $startpos $endpos) trait_name (ty :: tys) methods }
   | IMPL; trait_name = IDENT; OF; head = impl_head; LBRACE; entries = list(impl_entry); RBRACE
       { let loc = mkloc $startpos $endpos in
-        let explicit, ty = head in
-        let mod_name = String.capitalize_ascii (trait_name ^ "__" ^ ty) in
+        let leaves = Impl_pattern.vars head in
+        let named = List.filter (fun v -> v <> "") leaves in
+        if named <> [] && List.length named <> List.length leaves then
+          raise (Location.Error (Location.error ~loc "name every parameter of the type, or none: `e array array`"));
+        (* One level of type, its arguments all parameters (`array`, `e
+           array`, `(k, v) Hashtbl.t`): the usual impl, named after its
+           type. Anything else is an impl on a nested type, a pattern
+           ([Impl_pattern]): `int array`, `e array array`. *)
+        let ty, pattern =
+          match head with
+          | Impl_pattern.Con (ty, args) when List.for_all (function Impl_pattern.Var _ -> true | _ -> false) args -> ty, None
+          | Impl_pattern.Con (ty, _) -> ty, Some head
+          | Impl_pattern.Var v ->
+            raise (Location.Error (Location.error ~loc (Printf.sprintf "unknown type `%s`" v)))
+        in
+        let explicit = if named = [] then None else Some named in
+        let leaf_count = List.length leaves in
+        let mod_name =
+          match pattern with
+          | None -> String.capitalize_ascii (trait_name ^ "__" ^ ty)
+          | Some _ -> Impl_pattern.module_name trait_name ty
+        in
         let methods = List.filter_map (function `Method m -> Some m | `Assoc _ -> None) entries in
         let assoc = List.filter_map (function `Assoc (n, t) -> Some (n, t) | `Method _ -> None) entries in
         let assoc_error ((n : string Location.loc), _) msg = raise (Location.Error (Location.error ~loc:n.loc msg)) in
@@ -889,6 +938,9 @@ item:
           (match assoc with
            | a :: _ -> assoc_error a (Printf.sprintf "trait `%s` takes no `type ... = ...` in its impls" trait_name)
            | [] -> ());
+          if pattern <> None then
+            raise (Location.Error (Location.error ~loc
+              (Printf.sprintf "trait `%s` is implemented for a type constructor (`impl %s of %s`), not for a nested type" trait_name trait_name ty)));
           if explicit <> None then
             raise (Location.Error (Location.error ~loc
               (Printf.sprintf "trait `%s` takes its type parameters from `%s` itself: write `impl %s of %s`" trait_name ty trait_name ty)));
@@ -909,7 +961,7 @@ item:
            itself (`type a = (k, v)`). *)
         (match explicit with
          | Some ps ->
-           if List.length ps <> type_arity ty then
+           if pattern = None && List.length ps <> type_arity ty then
              raise (Location.Error (Location.error ~loc
                (Printf.sprintf "`%s` takes %d type parameter(s), not %d" ty (type_arity ty) (List.length ps))));
            List.iter
@@ -919,7 +971,7 @@ item:
                    (Printf.sprintf "`%s` is already a type of trait `%s`: name the parameter otherwise" p trait_name))))
              ps
          | None -> ());
-        let tied_count = if explicit <> None then 0 else min (type_arity ty) (List.length other_names) in
+        let tied_count = if explicit <> None then 0 else min leaf_count (List.length other_names) in
         let other_count = List.length other_names in
         let free_names = List.filteri (fun i _ -> i < other_count - tied_count) other_names in
         let tied_names = List.filteri (fun i _ -> i >= other_count - tied_count) other_names in
@@ -947,7 +999,7 @@ item:
           List.find_map (fun ((m : string Location.loc), t) -> if m.txt = n then Some (param_ref.typ param_ref t) else None) assoc
         in
         let free_names = List.filter (fun n -> fixed n = None) free_names in
-        let pad_count = max 0 (type_arity ty - List.length tied_names) in
+        let pad_count = max 0 (leaf_count - List.length tied_names) in
         let pad_names =
           match explicit with
           | Some ps -> ps
@@ -965,9 +1017,33 @@ item:
           if all_param_names = [] then Longident.Lident n else Option.get (Longident.unflatten [ functor_param; n ])
         in
         let applied_ty () =
-          Ast_helper.Typ.constr ~loc (Location.mkloc (Type_name.lid ty) loc)
-            (List.map (fun n -> Ast_helper.Typ.constr ~loc (Location.mkloc (other_ref n) loc) []) applied_ty_args)
+          match pattern with
+          | None ->
+            Ast_helper.Typ.constr ~loc (Location.mkloc (Type_name.lid ty) loc)
+              (List.map (fun n -> Ast_helper.Typ.constr ~loc (Location.mkloc (other_ref n) loc) []) applied_ty_args)
+          | Some p ->
+            (* the pattern, its leaves in order the functor's fields *)
+            let names = ref applied_ty_args in
+            let rec core = function
+              | Impl_pattern.Var _ ->
+                let n = List.hd !names in
+                names := List.tl !names;
+                Ast_helper.Typ.constr ~loc (Location.mkloc (other_ref n) loc) []
+              | Impl_pattern.Con (c, args) ->
+                Ast_helper.Typ.constr ~loc (Location.mkloc (Type_name.lid c) loc) (List.map core args)
+            in
+            core p
         in
+        (match pattern with
+         | Some p ->
+           let names = ref applied_ty_args in
+           let rec rename = function
+             | Impl_pattern.Var _ -> let n = List.hd !names in names := List.tl !names; Impl_pattern.Var n
+             | Impl_pattern.Con (c, args) -> Impl_pattern.Con (c, List.map rename args)
+           in
+           Impl_pattern.register trait_name
+             { Impl_pattern.pattern = rename p; module_name = mod_name; params = applied_ty_args }
+         | None -> ());
         let is_free n = List.mem n free_names in
         (* Every non-free type, with what it is in this impl. *)
         let manifest_of n =
@@ -1029,9 +1105,12 @@ item:
    give the trait's types in terms of them: `(k, v) Hashtbl.t`, `a
    btree`. *)
 impl_head:
-  | ty = impl_type { (None, ty) }
-  | p = IDENT; ty = impl_type { (Some [ p ], ty) }
-  | LPAREN; ps = separated_nonempty_list(COMMA, IDENT); RPAREN; ty = impl_type { (Some ps, ty) }
+  | names = nonempty_list(impl_type) { mk_impl_pattern (mkloc $startpos $endpos) [] names }
+  | LPAREN; args = separated_nonempty_list(COMMA, impl_arg); RPAREN; names = nonempty_list(impl_type)
+      { mk_impl_pattern (mkloc $startpos $endpos) args names }
+
+impl_arg:
+  | names = nonempty_list(impl_type) { mk_impl_pattern (mkloc $startpos $endpos) [] names }
 
 (* The type an impl targets: `int`, `btree`, or a module's `Hashtbl.t`
    (encoded, see [Type_name]). *)
