@@ -6,13 +6,17 @@ Functions and operators share the same definition syntax:
 
 ```text
 fn <name> <args>* { <body> }
-op <symbols> <arg1> <arg2> { <body> }
+op <symbols> <arg1> <arg2> { <body> }                 // a <symbols> b
+op [] <arg1> <arg2> { <body> }                        // a[i]
+op []<symbols> <arg1> <arg2> <arg3> { <body> }        // a[i] <symbols> v
 ```
 
 The only difference is how they are called. A function is **prefix** (its
 name comes first), while an operator, made of symbols, is **infix** (it goes
-between its two arguments). Wrapping an operator in parentheses turns it
-back into a prefix function:
+between its two arguments). An indexing operator, starting with `[]`, takes
+the container and the index, plus the value for one with symbols after the
+`[]`: three arguments (see [Indexing operators](#indexing-operators)).
+Wrapping an operator in parentheses turns it back into a prefix function:
 
 ```rust
 fn foo a b { print a; print " << "; println b; }
@@ -36,8 +40,8 @@ A few rules:
   function itself (see [η-reduction](#η-reduction)).
 - The last expression of a block is its return value. No `return` keyword
   is needed.
-- An operator takes exactly two arguments, except an indexing one (see
-  [Indexing operators](#indexing-operators)).
+- An operator takes exactly two arguments, except an indexing one with
+  symbols after its `[]` (`[]=`, `[]+=`...), which takes exactly three.
 
 ### Destructuring parameters
 
