@@ -1,0 +1,12 @@
+#use "stdlib/btree.scaml"
+
+
+fn main () {
+  let t = Node (Node (Leaf, 1, Leaf), 2, Node (Node (Leaf, 4, Leaf), 3, Leaf));
+
+  println t;
+  println (sum 0 t);
+  println (postfix_order t);
+  println (prefix_order t);
+  println (infix_order t);
+}

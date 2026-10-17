@@ -1,19 +1,15 @@
 
-fn last l {
-    match l {
-        | [] -> None
-        | [hd] -> Some hd
-        | x::xs -> last xs
-    }
+fn last { function
+  | [] -> None
+  | [hd] -> Some hd
+  | x::xs -> last xs
 }
 
-fn last_two l {
-    match l {
-        | [] -> None
-        | [hd] -> None
-        | [a; b] -> Some (a, b)
-        | a::b::xs -> last_two xs
-    }
+fn last_two { function
+  | [] -> None
+  | [hd] -> None
+  | [a; b] -> Some (a, b)
+  | a::b::xs -> last_two xs
 }
 
 fn at i l {
@@ -26,8 +22,8 @@ fn at i l {
     aux i l
 }
 
-fn length l {
-    fold_left (^acc e -> 1 + acc) 0 l
+fn length {
+    fold_left (^acc e -> 1 + acc) 0
 }
 
 fn rev l {
@@ -156,7 +152,7 @@ fn decode l {
     }
 }
 
-fn main {
+fn main () {
     println (last ["a" ; "b" ; "c" ; "d"]);
     println (last []);
 

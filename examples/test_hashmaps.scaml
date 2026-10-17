@@ -1,0 +1,11 @@
+#use "stdlib/hashmap.scaml"
+
+fn main () {
+  let hm = init_hashmap 10 [("a", 1); ("b", 0)];
+
+  println hm;
+  println (hm["a"]);
+
+  hm["a"] = 2;
+  println hm;
+}

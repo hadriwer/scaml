@@ -1,0 +1,10 @@
+#use "stdlib/dfa.scaml"
+
+fn main () {
+  let s1, s2 = "state1", "state2";
+  let dfa = init_dfa s1 [s2] [(s1, "a", s1); (s1, "b", s2); (s2, "a", s2); (s2, "b", s1)];
+
+  println dfa;
+
+  println (match_pattern dfa "abaaaaaaaaabaaaa")
+}

@@ -1,0 +1,39 @@
+
+
+fn main () {
+    // define an array
+    let a = [|1; 2; 3; 4|];
+    println a;
+
+    let a' = Array.make 10 0;                    // create an array of 10 zeros
+    println a';                                  // print this array
+
+    let a'' = Array.init 10 (^x -> x);           // init an array with [|0; 1 ... |]
+    println a'';
+
+    // operation on array
+    println (a @ a);                            // concat arrays
+    println (len a);                            // get the len of the array
+
+    println (a[0]);                             // 1 get the indice-0 of the array "a"
+    a[0] = 0;                                   // set the indice-0 of the array "a" to 0
+    println (a[0]);
+
+    // println (a + a');                        // error because len a != len a'
+
+    println (a' + a'');                         // add each case of a' with a''
+    println (1 + a');                           // add 1 to each cases of a'
+    println ((1 + a') == (a' + 1));             // true -> commutative operation
+
+    println ((1 - a') == (a' - 1));             // false -> 1 - 0 != 0 - 1
+
+
+    println (sum 0 a);                          // do the sum of the array
+    a[0] = 1;
+    println (fold_left (*) 1 a);                // doing the product
+    println (map (^x -> x * 2 + 1) a);          // each case is change by the operation : case * 2 + 1
+    println (map (^x -> x + 2 * 3) a);
+    println (map ((+) 1) a);                    // plus 1
+
+    iter println a;                             // printline elements of the array a
+}

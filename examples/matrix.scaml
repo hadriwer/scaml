@@ -1,29 +1,37 @@
+#use "stdlib/matrix.scaml"
 
-fn cmp_mat {
+fn cmp_mat () {
     let m = Array.make 10 0;
     let m' = Array.make 10 0;
-    println (m == m');
-    let m = Array.make_matrix 10 10 0;
-    let m' = Array.make_matrix 10 10 0;
-    println (m == m');
+    println (m == m');                    // true, both are array of 0 : pattern comparaison
+
+    let m = make_matrix 10 10 0;
+    let m' = make_matrix 10 10 0;
+    println (m == m');                    // same thing
 }
 
-fn col {
+fn col () {
     let n = 10;
     let m = Array.init n Fun.id;
 
-    println (m[0] * 2);
-    m |> map (^x -> 1 - x) |> println;
+    println (m[0] * 2);                     // println first element multiply by two
+    m |> map (^x -> 1 - x) |> println;      // apply print on apply map to matrix
 }
 
-fn main {
-    let m = Array.init_matrix 10 10 (^x y -> x + y);
+fn main () {
+    let m = init_matrix 10 10 (^x y -> x + y);
     let a = Array.init 10 Fun.id;
+
     println m;
     println m[0][0];
-    println m[2*0+1,0];
+    println m[2*0+1,0];                     // expression also work in get bracket
     cmp_mat ();
     col ();
+
     println (map (^x -> x * 2) m);
     println (map (^x -> x * 2) a);
+
+    let m = make_matrix 2 2 0;
+    m[0,0] += 1;                            // does m[0,0] = m[0,0] + 1
+    println m;
 }

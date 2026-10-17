@@ -1,13 +1,18 @@
 
 
+fn main () {
+    println (1 == 1);                           // equality on int
+    println ('a' == 'a');                       // same for char
+    println ([1; 2; 3] == [1; 2; 3]);           // same for list
+    println (1 != 2);                           // true
 
-fn main {
-    println (1 == 1);
-    println (2 == 1);
-    println ('a' == 'a');
-    println ('a' == 'b');
-    println ("scaml" == "scaml");
-    println ("scaml" != "scaml");
-    println ("scaml" != "ocaml");
-    println ("scaml" == "ocaml");
+    println (1 < 1);                            // false
+    println ([1; 2; 3] < [2; 3; 4]);            // true, lexicographical order
+    println ([1; 2; 3] < [1; 2; 4]);            // true
+    println ([1; 2; 3] < [1; 2; 3; 4]);         // true
+
+    println (true && false);                    // false
+    println (false || true);                    // true
+
+    println (not true);                         // false
 }
