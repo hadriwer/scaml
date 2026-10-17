@@ -98,17 +98,17 @@ fn infix_order bt {
 
 impl showable of btree {
     fn print t {
-      fn go pr pre t {
+      fn go pre t {
         match t {
           | Leaf -> println "leaf"
           | Node (l, x, r) -> {
-              pr x;
-              print pre; print "├── "; go pr (pre + "│   ") l;
-              print pre; print "└── "; go pr (pre + "    ") r
+              println x;
+              print pre; print "├── "; go (pre + "│   ") l;
+              print pre; print "└── "; go (pre + "    ") r
           }
         }
       }
-      go (^x -> println x) "" t
+      go "" t
     }
 
     fn println t { print t }
