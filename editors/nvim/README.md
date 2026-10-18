@@ -41,8 +41,15 @@ another one.
 With a completion plugin, add its `omni` source for SCaml files:
 
 ```lua
--- blink.cmp (e.g. in LazyVim)
-{ "saghen/blink.cmp", opts = { sources = { per_filetype = { scaml = { inherit_defaults = true, "omni" } } } } }
+-- blink.cmp (e.g. in LazyVim); no `()` added after a function, SCaml
+-- applies by juxtaposition (`f x`)
+{
+  "saghen/blink.cmp",
+  opts = {
+    sources = { per_filetype = { scaml = { inherit_defaults = true, "omni" } } },
+    completion = { accept = { auto_brackets = { blocked_filetypes = { "scaml" } } } },
+  },
+}
 
 -- nvim-cmp, with hrsh7th/cmp-omni
 require("cmp").setup.filetype("scaml", { sources = { { name = "omni" }, { name = "buffer" } } })
