@@ -41,9 +41,10 @@ syn match scamlUnit        "(\s*)"
 syn match scamlEmpty       "\[|\s*|\]"
 syn match scamlEmpty       "\[\s*\]"
 
-" Numbers: `1.` and `1.5` are floats, but `0..2` is the int 0 then `..`.
+" Numbers: `1.`, `1.5`, `1e-6` and `2.5E3` are floats, but `0..2` is the
+" int 0 then `..`.
 syn match scamlInteger     "\%([A-Za-z0-9_']\)\@1<!\d\+"
-syn match scamlFloat       "\%([A-Za-z0-9_']\)\@1<!\d\+\.\%(\.\)\@!\d*"
+syn match scamlFloat       "\%([A-Za-z0-9_']\)\@1<!\d\+\%(\.\%(\.\)\@!\d*\%([eE][-+]\=\d\+\)\=\|[eE][-+]\=\d\+\)"
 
 " Declarations
 syn match scamlFnName      "\%(\<fn\s\+\)\@<=[a-z_][A-Za-z0-9_']*"

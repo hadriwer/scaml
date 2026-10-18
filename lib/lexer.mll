@@ -21,7 +21,9 @@ let operator c =
 
 let digit = ['0'-'9']
 let int = digit+
-let float = digit+ ['.'] digit*
+(* `1.5`, `1.`, and with an exponent, as in OCaml: `1e-6`, `2.5E3`. *)
+let exponent = ['e' 'E'] ['+' '-']? digit+
+let float = digit+ ['.'] digit* exponent? | digit+ exponent
 let alpha = ['a'-'z' 'A'-'Z' '_' '\'']
 let alnum = alpha | digit
 let ident = alpha alnum*

@@ -183,7 +183,7 @@ fn eig_qr_ a n {
         let v = Array.init n (^i -> if i < k then 0. else if i == k then r[i,k] - alpha else r[i,k]);
         let norm_v = sqrt (fold_left (^acc i -> acc + v[i] * v[i]) 0. (k..n));
 
-        if norm_v > 0.000000000001 then {
+        if norm_v > 1e-12 then {
             iter (^i -> v[i] = v[i] / norm_v) (k..n);
             // r = h r and q = q h, with h = I - 2 v v^T
             iter (^j -> {
@@ -211,7 +211,7 @@ fn eig m {
     then
         failwith "error eig : matrix must be square so shape.x == shape.y"
     else {
-        let max_iter, tol = 10000, 0.0000000001;
+        let max_iter, tol = 10000, 1e-10;
         let a0 = Array.map (^row -> Array.map (^x -> to_float x) row) m.arr;
 
         // biggest coefficient under the diagonal: 0 once a is triangular

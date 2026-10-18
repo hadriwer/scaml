@@ -132,9 +132,9 @@
     "number": {
       "patterns": [
         {
-          "comment": "`1.` and `1.5` are floats, but `0..2` is the int 0 followed by `..`",
+          "comment": "`1.`, `1.5`, `1e-6`, `2.5E3` are floats, but `0..2` is the int 0 followed by `..`",
           "name": "constant.numeric.float.scaml",
-          "match": "(?<![A-Za-z0-9_'])\\d+\\.(?!\\.)\\d*"
+          "match": "(?<![A-Za-z0-9_'])\\d+(?:\\.(?!\\.)\\d*(?:[eE][+-]?\\d+)?|[eE][+-]?\\d+)"
         },
         {
           "name": "constant.numeric.integer.scaml",

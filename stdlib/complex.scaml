@@ -128,7 +128,7 @@ fn ceig_qr_ a p {
         let v = Array.init p (^i -> if i < k then zero else if i == k then r[i,k] - alpha else r[i,k]);
         let vn2 = fold_left (^acc i -> acc + modulus v[i] * modulus v[i]) 0. (k..p);
 
-        if vn2 > 0.000000000000000000001 then {
+        if vn2 > 1e-21 then {
             iter (^j -> {
                 let d = fold_left (^acc i -> acc + conj v[i] * r[i,j]) zero (k..p) * (2. / vn2);
                 iter (^i -> r[i,j] = r[i,j] - v[i] * d) (k..p);
@@ -155,7 +155,7 @@ fn eig_complex m {
     then
         failwith "error eig_complex : matrix must be square so shape.x == shape.y"
     else {
-        let max_iter, tol = 1000 * n, 0.000000000001;
+        let max_iter, tol = 1000 * n, 1e-12;
         let zero = complex 0. 0.;
         let t = Array.map (^row -> Array.map (^x -> to_complex x) row) m.arr;
         let qs = Array.init_matrix n n (^i j -> if i == j then complex 1. 0. else zero);

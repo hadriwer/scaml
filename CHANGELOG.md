@@ -13,6 +13,7 @@ syntax and the standard library may still change between minor versions.
   (`fn answer { 6 * 7 }` is an error: a constant is a `let`). A function
   taking nothing says so: `fn hello () { .. }`, and so does `main`, `fn
   main () { .. }` (`fn main { .. }` is an error saying it).
+- Floats with an exponent, as in OCaml: `1e-6`, `2.5E3`, `1.e2`.
 - `function | p1 -> e1 | p2 -> e2`, OCaml's `function`: matches its one
   argument, `^x -> match x { .. }` without naming it. With η-reduction:
   `fn size { function | Leaf -> 0 | Node (l, _, r) -> size l + 1 + size r

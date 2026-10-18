@@ -32,7 +32,7 @@ fn softmax x {
   exp_x / (sum 0. exp_x)
 }
 
-fn is_close ?(rel_tol=0.000000001) ?(abs_tol=0.000000001) a b {
+fn is_close ?(rel_tol=1e-9) ?(abs_tol=1e-9) a b {
   a == b || abs_float (a - b) <= maxn (rel_tol * maxn (abs_float a) (abs_float b)) abs_tol
 }
 
