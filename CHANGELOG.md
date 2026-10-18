@@ -109,6 +109,13 @@ syntax and the standard library may still change between minor versions.
   functions passed as values; types after `of` are colored as types.
   Parameters of indexing operators (`op []+= a i v`) are no longer taken
   for something else. `function` is highlighted as a keyword.
+- Neovim: completion of the standard library's functions (`omnifunc`,
+  usable by blink.cmp or nvim-cmp), with the signature of trait methods
+  and the parameters of functions, limited to the files the buffer
+  `#use`s (see `editors/nvim/README.md`). OCaml's modules too: `Array.`
+  offers `make`, `init`, `map`... with their type and documentation, read
+  from the compiler's `.mli` files, and a capitalized word offers the
+  module names.
 
 ### Fixed
 
