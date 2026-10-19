@@ -1,0 +1,15 @@
+#use "stdlib/math.scaml"
+
+// softmax and layer_norm on a whole matrix, per row, per column, and on
+// an array
+
+fn main () {
+  let m = to_matrix [|[|1.; 2.|]; [|3.; 4.|]|];
+  println (softmax m);
+  println (softmax axis=Row m);
+  println (softmax axis=Col m);
+  println (softmax [|1.; 2.; 3.|]);
+  println (layer_norm axis=Row m);
+  println (layer_norm epsilon=0. axis=Col m);
+  println (layer_norm m);
+}

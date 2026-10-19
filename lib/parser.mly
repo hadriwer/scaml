@@ -182,7 +182,9 @@ let mk_type_component loc name =
 let rec placeholder_names_in_type (ty : core_type) : string list =
   match ty.ptyp_desc with
   | Ptyp_arrow (_, t1, t2) -> placeholder_names_in_type t1 @ placeholder_names_in_type t2
-  | Ptyp_constr ({ txt = Longident.Lident name; _ }, []) when not (List.mem name known_types) -> [ name ]
+  (* a type declared above (`type axis { .. }`) is that type *)
+  | Ptyp_constr ({ txt = Longident.Lident name; _ }, [])
+    when not (List.mem name known_types || Hashtbl.mem user_type_arity name) -> [ name ]
   (* `a t`: the constructor `t` itself is declared explicitly (`type t of
      1`); only its arguments may be placeholders. *)
   | Ptyp_constr (_, args) -> List.concat_map placeholder_names_in_type args
@@ -464,6 +466,55 @@ let annotate_self_params self_name (methods : structure_item list) : structure_i
       | Pstr_value (rf, [ ({ pvb_pat = { ppat_desc = Ppat_var { txt = name; _ }; _ }; _ } as vb) ]) ->
         let chain = match Hashtbl.find_opt method_sig_tbl name with Some c -> c | None -> [] in
         { item with pstr_desc = Pstr_value (rf, [ { vb with pvb_expr = annotate_expr chain vb.pvb_expr } ]) }
+      | _ -> item)
+    methods
+
+(* Annotates each curried parameter of an impl method that the trait
+   declares with a concrete type, one naming none of the trait's own types
+   (`fn forward of float matrix -> a -> float matrix`: `x : float matrix`).
+   As for the self type (see [annotate_self_params]), nothing else tells
+   the body's typing what such a parameter is, and a trait call on it
+   (`x + x`, `x *. w`) would be left unresolved. *)
+let annotate_concrete_params trait_types (vals : signature_item list) (methods : structure_item list) : structure_item list =
+  let rec concrete (ty : core_type) =
+    match ty.ptyp_desc with
+    | Ptyp_constr ({ txt = Longident.Lident n; _ }, _) when List.mem n trait_types -> false
+    | Ptyp_constr (_, args) -> List.for_all concrete args
+    | Ptyp_tuple args -> List.for_all (fun (_, t) -> concrete t) args
+    | Ptyp_arrow (_, t1, t2) -> concrete t1 && concrete t2
+    | _ -> false
+  in
+  let rec params (ty : core_type) =
+    match ty.ptyp_desc with
+    | Ptyp_arrow (Nolabel, t1, t2) -> t1 :: params t2
+    | _ -> []
+  in
+  let declared name =
+    List.find_map
+      (fun (si : signature_item) ->
+        match si.psig_desc with
+        | Psig_value vd when vd.pval_name.txt = name -> Some (params vd.pval_type)
+        | _ -> None)
+      vals
+  in
+  let rec annotate_expr (tys : core_type list) (e : expression) : expression =
+    match e.pexp_desc, tys with
+    | Pexp_function ([ { pparam_desc = Pparam_val (Nolabel, def, pat); pparam_loc } ], c, Pfunction_body inner), ty :: rest ->
+      let pat' =
+        match pat.ppat_desc with
+        | Ppat_var _ when concrete ty -> Ast_helper.Pat.constraint_ ~loc:pat.ppat_loc pat ty
+        | _ -> pat
+      in
+      { e with pexp_desc = Pexp_function ([ { pparam_desc = Pparam_val (Nolabel, def, pat'); pparam_loc } ], c, Pfunction_body (annotate_expr rest inner)) }
+    | _ -> e
+  in
+  List.map
+    (fun (item : structure_item) ->
+      match item.pstr_desc with
+      | Pstr_value (rf, [ ({ pvb_pat = { ppat_desc = Ppat_var { txt = name; _ }; _ }; _ } as vb) ]) ->
+        (match declared name with
+         | Some tys -> { item with pstr_desc = Pstr_value (rf, [ { vb with pvb_expr = annotate_expr tys vb.pvb_expr } ]) }
+         | None -> item)
       | _ -> item)
     methods
 
@@ -1085,6 +1136,10 @@ item:
           Ast_helper.Mty.signature ~loc (type_sigs @ List.map (free_to_var.signature_item free_to_var) vals)
         in
         let methods = match self_name with Some self -> annotate_self_params self methods | None -> methods in
+        let methods =
+          annotate_concrete_params abstract_types
+            (Option.value (Hashtbl.find_opt trait_vals trait_name) ~default:[]) methods
+        in
         let body =
           Ast_helper.Mod.constraint_ ~loc
             (Ast_helper.Mod.structure ~loc (type_manifests @ methods))

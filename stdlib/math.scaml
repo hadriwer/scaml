@@ -11,6 +11,7 @@
 //   see the file LICENSE at the root of the project.                       //
 //                                                                          //
 //**************************************************************************//
+#use "stdlib/matrix.scaml"
 
 let pi = 3.14159265358979323846;
 
@@ -27,9 +28,8 @@ fn tanh x {
   (pose - nege) / (pose + nege)
 }
 
-fn softmax x {
-  let exp_x = map exp x;
-  exp_x / (sum 0. exp_x)
+fn softmax ?axis x {
+  along axis (^v -> { let e = map exp (v - fold_left maxn v[0] v); e / sum 0. e }) x
 }
 
 fn is_close ?(rel_tol=1e-9) ?(abs_tol=1e-9) a b {
@@ -39,4 +39,31 @@ fn is_close ?(rel_tol=1e-9) ?(abs_tol=1e-9) a b {
 fn cross_entropy p q {
   let pq = p * (map log q);
   - (sum 0. pq)
+}
+
+fn mean ?n v {
+  let n = match n {| None -> len v | Some n -> n };
+  (sum 0. v) / n
+}
+
+fn var ?n v {
+  let n = match n {| None -> len v | Some n -> n};
+  let m = mean v;
+
+  fold_left (^acc e -> (e - m)**2. + acc) 0. v / n
+}
+
+fn layer_norm ?axis ?(epsilon=1e-5) ?(gamma=1.) ?(beta=0.) x {
+  along axis (^v -> {
+    let length = len v;
+    let m = mean n=length v;
+    let s = var n=length v;
+    map (^e -> (e - m) / (sqrt (s + epsilon)) * gamma + beta) v
+  }) x
+}
+
+fn uniform a b {
+  if a >= b then failwith "error uniform : a should be strictly less then b"
+  else
+    a + Random.float (b - a)
 }

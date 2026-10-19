@@ -47,6 +47,8 @@ syntax and the standard library may still change between minor versions.
   `a[i] <op> v` is an expression (`a[i] = v` too), whose value `v` extends
   as far as it can. A literal negative number (`-1`) can't be a parameter
   anymore (it still can in `match` and `let`).
+- A trait method can have its self type only in its result, `fn init of
+  int -> a`: `let l = init 3` uses the impl of the type `l` is used as.
 - Constants: a `let` outside any function, `let pi = 3.14;`, with any
   pattern (`let (w, h) = (800, 600);`). The name is lowercase.
 
@@ -74,12 +76,20 @@ syntax and the standard library may still change between minor versions.
   float equality up to rounding errors like Python's `math.isclose`
   (optional `rel_tol` and `abs_tol`, both `1e-9` by default, so that
   `sin pi |> is_close 0.` holds).
+- `softmax` and `layer_norm` take an optional `axis`, for a matrix:
+  `softmax axis=Row m` on each row, `axis=Col` on each column, the whole
+  matrix without it (an array is always taken whole). Through the new
+  `axis_mappable` trait (`along axis f x`), for array and matrix.
 - Slicing a string with a range (`s[a..b]`, `s[(a..b) + 2]`) takes linear
   time (`String.sub` for a step of 1), instead of building it char by char.
 - Binary trees (`btree`) move out of the core library to
   `stdlib/btree.scaml` (`#use "stdlib/btree.scaml"`), with
   `infix_order`, `prefix_order`, `postfix_order` (in linear time), `iter`,
   `iteri` and `println` (drawn as a tree).
+- `foldable` for matrices: `sum 0. m`, `fold_left`, `fold_right` over
+  every element, row by row.
+- Arithmetic between a matrix and a float, as with an int: `m - 1.`,
+  `2. * m`.
 - `to_matrix` (`stdlib/matrix.scaml`): a vector as a column, an array of
   rows as a matrix (`conversionnable_matrix`, impls on `e array` and `e
   array array`).
@@ -120,6 +130,15 @@ syntax and the standard library may still change between minor versions.
 
 ### Fixed
 
+- A type declared in the program (`type axis { .. }`) can appear in a
+  trait's signature: it was taken for one of the trait's own types.
+- In an impl, a parameter the trait gives a concrete type (`fn forward of
+  float matrix -> a -> float matrix`) has that type in the body: `x + x`,
+  `x *. w` on it failed with "Unbound value `+`".
+- A generic function folding over a range (`fn f m { fold_left (^acc i ->
+  acc + m[i]) 0. (0..3) }`) failed with "Unbound value iteri__mono3".
+- `-` (or any operator) on matrices both in an impl and elsewhere failed
+  with "Unbound value `-` for (array, array, mono23)".
 - Char literals accept any character and OCaml's escapes (`' '`, `'1'`,
   `'\n'`, `'\''`...), not only a letter: `String.split_on_char ' '` failed
   with "Unbound value '" (#6).

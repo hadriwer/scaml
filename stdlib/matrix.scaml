@@ -61,6 +61,13 @@ impl concetanable of matrix {
     }
 }
 
+impl sizable of matrix {
+  fn len m {
+    let r, c = m.shape;
+    r * c
+  }
+}
+
 impl indexable of matrix, int {
     op [] m i { m.arr[i] }
     op []= m i row { m.arr[i] = row }
@@ -73,6 +80,11 @@ impl iterable of matrix {
         let (_, cols) = m.shape;
         Array.iteri (^i row -> Array.iteri (^j x -> f (i * cols + j) x) row) m.arr
     }
+}
+
+impl foldable of matrix {
+    fn fold_left f acc m { Array.fold_left (^acc row -> Array.fold_left f acc row) acc m.arr }
+    fn fold_right f m acc { Array.fold_right (^row acc -> Array.fold_right f row acc) m.arr acc }
 }
 
 impl mappable of matrix {
@@ -110,6 +122,22 @@ impl arithm of int, matrix {
     op * i m { { arr = i * m.arr; shape = m.shape } }
     op / i m { { arr = i / m.arr; shape = m.shape } }
     op % i m { { arr = i % m.arr; shape = m.shape } }
+}
+
+impl arithm of matrix, float {
+    op + m1 f { { arr = m1.arr + f; shape = m1.shape } }
+    op - m1 f { { arr = m1.arr - f; shape = m1.shape } }
+    op * m1 f { { arr = m1.arr * f; shape = m1.shape } }
+    op / m1 f { { arr = m1.arr / f; shape = m1.shape } }
+    op % m1 f { { arr = m1.arr % f; shape = m1.shape } }
+}
+
+impl arithm of float, matrix {
+    op + f m { { arr = f + m.arr; shape = m.shape } }
+    op - f m { { arr = f - m.arr; shape = m.shape } }
+    op * f m { { arr = f * m.arr; shape = m.shape } }
+    op / f m { { arr = f / m.arr; shape = m.shape } }
+    op % f m { { arr = f % m.arr; shape = m.shape } }
 }
 
 impl showable of matrix {
@@ -317,4 +345,42 @@ impl conversionnable_matrix of e array array {
     let cols = if len rows == 0 then 0 else len rows[0];
     { arr = rows ; shape = (len rows, cols) }
   }
+}
+
+type axis { | Row | Col }
+
+// `along axis f x`: f on the whole of x (axis None), or on each of its rows
+// or columns. An array has only one: f on the whole of it, whatever axis.
+trait axis_mappable {
+  type b
+  fn along of axis option -> (b -> b) -> a -> a
+}
+
+impl axis_mappable of e array {
+  type b = e array
+  fn along _ f v { f v }
+}
+
+impl axis_mappable of e matrix {
+  type b = e array
+  fn along axis f m {
+    let (r, c) = m.shape;
+    match axis {
+      | None -> {
+          let flat = f (Array.concat (Array.to_list m.arr));
+          { arr = Array.init r (^i -> Array.sub flat (i * c) c); shape = m.shape }
+        }
+      | Some Row -> { arr = map f m.arr; shape = m.shape }
+      | Some Col -> transpose { arr = map f (transpose m).arr; shape = (c, r) }
+    }
+  }
+}
+
+fn sum_rows m {
+  let (rows, cols) = m.shape;
+  init_matrix 1 cols (^_ j -> fold_left (^acc i -> acc + m[i, j]) 0. (0..rows))
+}
+
+fn add_row m r { 
+  { arr = map (^row -> row + r.arr[0]) m.arr; shape = m.shape } 
 }

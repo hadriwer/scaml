@@ -1,0 +1,97 @@
+#use "stdlib/math.scaml"
+
+trait layer_ops {
+  fn forward of float matrix -> a -> float matrix
+  fn backward of float matrix -> float matrix -> a -> (float matrix, a)
+  fn step of float -> a -> a -> a
+}
+
+// ---- linear ----
+
+type linear {
+  weights of float matrix;   // out_f x in_f
+  bias of float matrix       // 1 x out_f, added to every row
+}
+
+impl layer_ops of linear {
+  fn forward x l { 
+    add_row (x *. transpose l.weights) l.bias 
+  }
+
+  fn backward x dy l {
+    (dy *. l.weights, { weights = transpose dy *. x; bias = sum_rows dy })
+  }
+
+  fn step lr l g { { weights = l.weights - lr * g.weights; bias = l.bias - lr * g.bias } }
+}
+
+// ---- every kind of layer ----
+
+type layer {
+  | Linear of linear
+  | Relu
+}
+
+fn linear in_f out_f {
+  let a = Stdlib.sqrt (6. / (in_f + out_f));
+  Linear { weights = init_matrix out_f in_f (^_ _ -> uniform (-a) a); bias = make_matrix 1 out_f 0. }
+}
+
+fn relu_layer () { Relu }
+
+impl layer_ops of layer {
+  fn forward x l {
+    match l {
+      | Linear l -> forward x l
+      | Relu -> map relu x
+    }
+  }
+
+  fn backward x dy l {
+    match l {
+      | Linear l -> { let (dx, g) = backward x dy l; (dx, Linear g) }
+      // relu' x = 1 if x > 0, 0 otherwise
+      | Relu -> (map2 (^xi di -> if xi > 0. then di else 0.) x dy, Relu)
+    }
+  }
+
+  fn step lr l g {
+    match (l, g) {
+      | (Linear l, Linear g) -> Linear (step lr l g)
+      | (Relu, Relu) -> Relu
+      | _ -> failwith "step : the gradients don't have the layer's shape"
+    }
+  }
+}
+
+// ---- network: layers applied in order ----
+
+type network { layers of layer list }
+
+fn network layers { { layers = layers } }
+
+// Outside the impl: in it, `forward` would be the network's own.
+fn forward_layers x layers { fold_left (^h l -> forward h l) x layers }
+
+fn backward_layers x dy layers {
+  // the input of each layer, from the last one: the forward pass again
+  let (_, inputs) = fold_left (^(h, acc) l -> (forward h l, h :: acc)) (x, []) layers;
+  // from the last layer back, dy becoming each one's dx
+  fold_left
+    (^(dy, grads) (l, xi) -> { let (dx, g) = backward xi dy l; (dx, g :: grads) })
+    (dy, [])
+    (List.combine (List.rev layers) inputs)
+}
+
+fn step_layers lr layers grads { map2 (^l g -> step lr l g) layers grads }
+
+impl layer_ops of network {
+  fn forward x n { forward_layers x n.layers }
+
+  fn backward x dy n {
+    let (dx, grads) = backward_layers x dy n.layers;
+    (dx, { layers = grads })
+  }
+
+  fn step lr n g { { layers = step_layers lr n.layers g.layers } }
+}

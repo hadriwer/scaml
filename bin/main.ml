@@ -1417,9 +1417,20 @@ let harvest_dispatch ?(cache = false)
              (match Option.bind self_pos (List.nth_opt dispatch_args) with
               | Some (a : Typedtree.expression) -> record_trait_call head.exp_loc name trait_name a.exp_env a.exp_type
               | None -> ());
+             (* The self type only in the result (`fn init of int -> a`):
+                dispatched on the type the call's use gives it. *)
+             let returns_self =
+               self_pos = None
+               && List.length all_args = arity
+               && (match Hashtbl.find_opt names_of_name name, self_name_of trait_name with
+                   | Some names, Some self_name -> List.nth_opt names arity = Some self_name
+                   | _ -> false)
+             in
+             if returns_self then record_trait_call head.exp_loc name trait_name e.exp_env e.exp_type;
              let self_result =
                match self_pos with
                | Some i -> (match List.nth_opt dispatch_args i with Some a -> classify_at a | None -> `None)
+               | None when returns_self -> classify_at e
                | None ->
                  (* No clean self-position found in the signature (shouldn't
                     normally happen) -- fall back to scanning every
@@ -1743,6 +1754,45 @@ let harvest_dispatch ?(cache = false)
      exit 1
    | [] -> ());
   (table, dict_requirements)
+
+(* `let l = init 1 2` with `init`'s self type only in its result (`fn init
+   of int -> int -> a`): OCaml would generalize that result (the relaxed
+   value restriction), and the call's own type, by which it is dispatched
+   (see [harvest_dispatch]), would never learn what `l` is used as. As
+   `(fun l -> ...) (init 1 2)`, whose parameter stays monomorphic, it does
+   (a `match` would generalize its scrutinee the same way). *)
+let ungeneralize_self_results trait_methods (abstract_types : (string, string list) Hashtbl.t) (structure : Parsetree.structure) =
+  let returning_self =
+    List.filter_map
+      (fun (name, trait, names, _) ->
+        match List.rev names, Option.bind (Hashtbl.find_opt abstract_types trait) (fun ts -> List.nth_opt (List.rev ts) 0) with
+        | ret :: (_ :: _ as params), Some self when ret = self && not (List.mem self params) -> Some name
+        | _ -> None)
+      trait_methods
+  in
+  let rec head (e : Parsetree.expression) =
+    match e.pexp_desc with
+    | Pexp_apply (f, _) -> head f
+    | Pexp_ident { txt = Longident.Lident n; _ } -> Some n
+    | _ -> None
+  in
+  let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) =
+    match e.pexp_desc with
+    | Pexp_let (Nonrecursive, [ vb ], body)
+      when (match vb.pvb_expr.pexp_desc with Pexp_apply _ -> true | _ -> false)
+           && (match head vb.pvb_expr with Some n -> List.mem n returning_self | None -> false) ->
+      let param = { Parsetree.pparam_loc = vb.pvb_pat.ppat_loc; pparam_desc = Pparam_val (Nolabel, None, m.pat m vb.pvb_pat) } in
+      { e with
+        pexp_desc =
+          Pexp_apply
+            (Ast_helper.Exp.function_ ~loc:e.pexp_loc [ param ] None (Pfunction_body (m.expr m body)),
+             [ (Nolabel, m.expr m vb.pvb_expr) ]) }
+    | _ -> Ast_mapper.default_mapper.expr m e
+  in
+  if returning_self = [] then structure
+  else
+    let mapper = { Ast_mapper.default_mapper with expr } in
+    mapper.structure mapper structure
 
 let fresh_dispatch_module_counter = ref 0
 
@@ -2609,6 +2659,59 @@ let is_clone_name name =
   let rec go i = i + 6 <= String.length name && (String.sub name i 6 = "__mono" || go (i + 1)) in
   go 0
 
+(* A clone made in an earlier step sits before its first user then, but a
+   later clone may reuse it (the same function at the same types) from
+   further up: `f__mono5`, placed before `Nn__linear`, calling `g__mono3`
+   placed after it. Each such clone moves up to right before its first
+   user, along with the clones in between that it needs, when nothing else
+   it refers to is defined in between. *)
+let hoist_clones (structure : Parsetree.structure) =
+  let clone_name (item : Parsetree.structure_item) =
+    match item.pstr_desc with
+    | Pstr_value (_, [ { pvb_pat = { ppat_desc = Ppat_var { txt; _ }; _ }; _ } ]) when is_clone_name txt -> Some txt
+    | _ -> None
+  in
+  let uses name item = List.mem (name, None) (referenced item) in
+  (* The items of [arr] from [j] to [i] (excluded) that [i] needs, directly
+     or through each other, as indices; None if one isn't a clone. *)
+  let needed arr j i =
+    let rec go acc = function
+      | [] -> Some acc
+      | k :: todo ->
+        let deps =
+          List.filter
+            (fun d -> d >= j && d < i && not (List.mem d acc) && List.exists (fun n -> uses n arr.(k)) (provided_names arr.(d)))
+            (List.init (i - j) (fun d -> j + d))
+        in
+        if List.exists (fun d -> clone_name arr.(d) = None) deps then None else go (deps @ acc) (deps @ todo)
+    in
+    go [ i ] [ i ]
+  in
+  (* each move is up, and the clones' dependencies are acyclic: bounded
+     anyway *)
+  let rec pass fuel items =
+    let arr = Array.of_list items in
+    let n = Array.length arr in
+    let rec find i =
+      if i >= n then None
+      else
+        match clone_name arr.(i) with
+        | Some name ->
+          let rec first j = if j >= i then None else if uses name arr.(j) then Some j else first (j + 1) in
+          (match first 0 with
+           | Some j -> (match needed arr j i with Some block -> Some (j, block) | None -> find (i + 1))
+           | None -> find (i + 1))
+        | None -> find (i + 1)
+    in
+    match if fuel = 0 then None else find 0 with
+    | None -> items
+    | Some (j, block) ->
+      let moved = List.filteri (fun k _ -> List.mem k block) items in
+      pass (fuel - 1)
+        (List.concat (List.mapi (fun k it -> if List.mem k block then [] else if k = j then moved @ [ it ] else [ it ]) items))
+  in
+  pass 1000 structure
+
 (* One monomorphization step over a structure that the probe rounds can no
    longer improve ([typed] is that same structure's probe). [cache] maps
    (function, parameter types) to an existing clone's name across steps.
@@ -2653,8 +2756,9 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
          let is_generic =
            if List.mem name top_level then List.mem name generic_names
            else
-             has_unresolved_trait_call stuck vb.pvb_expr
-             || (Hashtbl.mem let_bound (loc_key name_loc) && has_unresolved_trait_call !local_generic vb.pvb_expr)
+             (* not an impl's method: its clone would never be bound *)
+             Hashtbl.mem let_bound (loc_key name_loc)
+             && (has_unresolved_trait_call stuck vb.pvb_expr || has_unresolved_trait_call !local_generic vb.pvb_expr)
          in
          if is_generic then begin
            Hashtbl.replace candidates (loc_key name_loc) (fun_arity vb.pvb_expr);
@@ -2803,7 +2907,7 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
         in
         go [] mapped
       in
-      (with_clones, true)
+      (hoist_clones with_clones, true)
     end
   end
 
@@ -3193,6 +3297,7 @@ let () =
       if trait_methods = [] then user_structure
       else begin
         let abstract_types = collect_trait_abstract_types user_structure in
+        let user_structure = ungeneralize_self_results trait_methods abstract_types user_structure in
         let ctor_methods = collect_ctor_methods user_structure in
         let overloads = collect_overloads user_structure in
         (* Each round's rewrite gives the next probe real types for what it

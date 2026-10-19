@@ -1,0 +1,13 @@
+#use "stdlib/matrix.scaml"
+// foldable on a matrix: every element, row by row (`sum`, `fold_left`...);
+// arithmetic between a matrix and a float
+
+fn main () {
+  let m = to_matrix [| [| 1.; 2. |]; [| 3.; 4. |] |];
+  println (sum 0. m);
+  println (fold_left (^acc x -> x :: acc) [] m);
+  println (fold_right (^x acc -> x :: acc) m []);
+  println (sum 0 (to_matrix [| 1; 2; 3 |]));
+  println ((m - 1.) * 2.);
+  println (10. - m);
+}

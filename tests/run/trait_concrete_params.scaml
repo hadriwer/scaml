@@ -1,0 +1,30 @@
+#use "stdlib/matrix.scaml"
+
+// A trait whose methods take concrete types besides the self type (`float
+// matrix`, `float`), and one with the self type only in its result
+// (`init`): dispatched on what the result is used as.
+
+type layer { w of float matrix }
+
+trait model {
+  fn init of int -> a
+  fn apply of float matrix -> a -> float matrix
+  fn step of float -> a -> a -> a
+}
+
+impl model of layer {
+  fn init n { { w = make_matrix 1 n 1. } }
+  fn apply x l { x *. transpose l.w + 1. }
+  fn step lr l g { { w = l.w - lr * g.w } }
+}
+
+// generic and unused: its `fold_left` on a range must not leave a clone of
+// an impl's method behind
+fn col_sum m j { fold_left (^acc i -> acc + m[i, j]) 0. (0..2) }
+
+fn main () {
+  let l = init 2;
+  let x = to_matrix [|[|1.; 2.|]; [|3.; 4.|]|];
+  println (apply x l - x *. transpose l.w);
+  println (step 0.5 l l).w;
+}
