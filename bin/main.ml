@@ -2627,7 +2627,15 @@ let annotate_params (tys : Parsetree.core_type list) (e : Parsetree.expression) 
              (tys', p :: rest'))
       in
       let tys', params' = ann tys params in
-      let body' = match body with Parsetree.Pfunction_body b -> Parsetree.Pfunction_body (go tys' b) | cases -> cases in
+      let body' =
+        match body, tys' with
+        | Parsetree.Pfunction_body b, _ -> Parsetree.Pfunction_body (go tys' b)
+        (* `function | p -> ..`: its argument is the next parameter *)
+        | Pfunction_cases (cases, l, attrs), ty :: _ ->
+          let annotate (c : Parsetree.case) = { c with pc_lhs = Ast_helper.Pat.constraint_ ~loc:c.pc_lhs.ppat_loc c.pc_lhs ty } in
+          Pfunction_cases (List.map annotate cases, l, attrs)
+        | cases, [] -> cases
+      in
       { e with pexp_desc = Pexp_function (params', c, body') }
     | _ -> e
   in

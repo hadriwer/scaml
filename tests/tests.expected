@@ -191,6 +191,8 @@ Range from 0 to 3 excluded. With a step of 1.
 [| 150.; 0.2 |]
 4
 true
+=== run/function_clone.scaml
+2
 === run/hashmap.scaml
 11
 None

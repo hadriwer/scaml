@@ -1,0 +1,16 @@
+// A generic function ending with `function`, specialized for its caller's
+// types: the argument `function` matches gets its type too, so that `%`
+// on what the cases bind is resolved.
+
+fn solve {
+  fn aux acc pos { function
+    | [] -> acc
+    | (g, n)::rest -> {
+        let p = if g == 'L' then (pos - n) % 100 else (pos + n) % 100;
+        aux (if p == 0 then acc + 1 else acc) p rest
+    }
+  }
+  aux 0 50
+}
+
+fn main () { println (solve [('L', 68); ('R', 18); ('L', 50); ('R', 50)]); }

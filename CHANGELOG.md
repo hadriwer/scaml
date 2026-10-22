@@ -130,6 +130,9 @@ syntax and the standard library may still change between minor versions.
 
 ### Fixed
 
+- A generic function ending with `function` (`fn aux acc pos { function
+  | .. }`) failed once specialized for its caller ("Unbound value `%`"):
+  the argument `function` matches didn't get its type.
 - A type declared in the program (`type axis { .. }`) can appear in a
   trait's signature: it was taken for one of the trait's own types.
 - In an impl, a parameter the trait gives a concrete type (`fn forward of
