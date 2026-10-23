@@ -150,6 +150,35 @@ op >= a b { scaml_geq a b }
 op == a b { scaml_eq a b }
 op != a b { scaml_neq a b }
 
+trait powerable {
+    op ** of a -> b -> c
+}
+
+impl powerable of int, int {
+    op ** x n {
+        if n < 0 then failwith "error ** : negative exponent on an int, use floats"
+        else {
+            fn aux acc b n {
+                if n == 0 then acc
+                else aux (if n % 2 == 1 then acc * b else acc) (b * b) (n / 2)
+            }
+            aux 1 x n
+        }
+    }
+}
+
+impl powerable of float, float {
+    op ** { Float.pow }
+}
+
+impl powerable of float, int {
+    op ** x n { Float.pow x (to_float n) }
+}
+
+impl powerable of int, float {
+    op ** x y { Float.pow (to_float x) y }
+}
+
 trait iterable {
     type a b
     fn iter of (a -> unit) -> b -> unit
@@ -519,6 +548,10 @@ impl quantifiable of range {
 
 trait sizable {
     fn len of a -> int
+}
+
+impl sizable of int {
+  fn len i { (to_int (floor (log10 (to_float i)))) + 1 }
 }
 
 impl sizable of array {

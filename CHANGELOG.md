@@ -80,6 +80,10 @@ syntax and the standard library may still change between minor versions.
   `softmax axis=Row m` on each row, `axis=Col` on each column, the whole
   matrix without it (an array is always taken whole). Through the new
   `axis_mappable` trait (`along axis f x`), for array and matrix.
+- `**` on int as well as float, in the core library (trait `powerable`,
+  no `#use` needed): `2 ** 10` is `1024`, by squaring; a negative exponent on
+  an int is an error. Mixed, an int with a float is a float, as for `+`:
+  `2. ** 3` is `8.`. It was OCaml's `**`, on floats only.
 - Slicing a string with a range (`s[a..b]`, `s[(a..b) + 2]`) takes linear
   time (`String.sub` for a step of 1), instead of building it char by char.
 - Binary trees (`btree`) move out of the core library to

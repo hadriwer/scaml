@@ -312,6 +312,17 @@ a table
 5
 Alone : 2
 3
+=== run/pow.scaml
+1024
+1
+-8
+7
+1.41421356237
+0.5
+8.
+1.41421356237
+0.5
+1.25
 === run/quoted.scaml
 Hello
 no newline
