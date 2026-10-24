@@ -3292,6 +3292,11 @@ let () =
         | _ -> ())
       user_structure;
     Compmisc.init_path ();
+    (* "unreachable case": only ever about [never_type_name], the empty type
+       a call like `f None` is cloned with when nothing fixes the option's
+       content (`Some a` can't happen there), never about the user's code.
+       Off for ocamlopt too, below. *)
+    ignore (Warnings.parse_options false "-56");
     let env = Compmisc.initial_env () in
 
     (* Probe typecheck + rewrite modules in ast + ocaml typecheck*)
@@ -3479,7 +3484,7 @@ let () =
     close_out oc;
 
     let cmd =
-      Printf.sprintf "ocamlfind ocamlopt %s -o %s"
+      Printf.sprintf "ocamlfind ocamlopt -w -56 %s -o %s"
         (Filename.quote ml_file) (Filename.quote exe_file)
     in
     let status = Sys.command cmd in

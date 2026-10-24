@@ -18,6 +18,10 @@ syntax and the standard library may still change between minor versions.
   argument, `^x -> match x { .. }` without naming it. With η-reduction:
   `fn size { function | Leaf -> 0 | Node (l, _, r) -> size l + 1 + size r
   }`.
+- Or-patterns, several patterns for one arm, in `match`, `function` and
+  `try`: `match x, y { | None, _ | _, None -> 0 | Some a, Some b -> a + b
+  }`, `| 0 | 1 -> "small"`, and inside parentheses, `Some (1 | 2)`. As in
+  OCaml, every alternative binds the same variables.
 - Impls on nested types: `impl conversionnable_matrix of e array array`,
   `impl showable of int array`, `impl named of (k, string) Hashtbl.t`. A
   call uses the most specific impl that applies (`e array array` over `e
@@ -134,6 +138,9 @@ syntax and the standard library may still change between minor versions.
 
 ### Fixed
 
+- No more "Warning 56 [unreachable-case]" on a `match` over an option
+  called with `None` (`add None (Some 2)`): it was about a type internal to
+  the compiler, not the program.
 - A generic function ending with `function` (`fn aux acc pos { function
   | .. }`) failed once specialized for its caller ("Unbound value `%`"):
   the argument `function` matches didn't get its type.

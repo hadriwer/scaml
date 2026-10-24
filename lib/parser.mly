@@ -600,6 +600,16 @@ let mkoverloadimpl loc trait_name (tys : string list) (methods : structure_item 
    `#use "stdlib/..."` resolves to the copy built into the compiler. *)
 let used_scaml : (string, unit) Hashtbl.t = Hashtbl.create 16
 
+(* `p1 | p2 | p3`, left-associative as OCaml's. *)
+let mk_or_pattern = function
+  | [] -> assert false
+  | first :: rest ->
+    List.fold_left
+      (fun acc (p : pattern) ->
+        let loc = { acc.ppat_loc with Location.loc_end = p.ppat_loc.loc_end } in
+        Ast_helper.Pat.or_ ~loc acc p)
+      first rest
+
 let load_used_file loc path : Parsetree.structure =
   let contents =
     match !Embedded.file path with
@@ -1257,14 +1267,18 @@ function_cases:
   | c = match_case %prec below_BAR { [ c ] }
   | c = match_case; BAR; rest = function_cases { c :: rest }
 
+(* Several patterns for one arm, `None, _ | _, None -> ...`: an or-pattern.
+   A `|` before the arm's `->` is one, after it the next arm. *)
 match_case:
-  | p = pattern; ARROW; e = body
-    { Ast_helper.Exp.case p e }
+  | alts = separated_nonempty_list(BAR, case_pattern); ARROW; e = body
+    { Ast_helper.Exp.case (mk_or_pattern alts) e }
+
+case_pattern:
+  | p = pattern { p }
   (* `match a, b { x, y -> ... }`: a tuple needs no parentheses here, just
      like the scrutinee itself. *)
-  | first = pattern; COMMA; rest = separated_nonempty_list(COMMA, pattern); ARROW; e = body
-    { let p = Ast_helper.Pat.tuple ~loc:(mkloc $startpos(first) $endpos(rest)) (List.map (fun p -> (None, p)) (first :: rest)) Closed in
-      Ast_helper.Exp.case p e }
+  | first = pattern; COMMA; rest = separated_nonempty_list(COMMA, pattern)
+    { Ast_helper.Pat.tuple ~loc:(mkloc $startpos $endpos) (List.map (fun p -> (None, p)) (first :: rest)) Closed }
 
 (* `x :: rest`, right-associative (`a :: b :: rest`). The only operator
    allowed in a pattern, besides `-` before a number (see [simple_pattern]). *)
@@ -1324,6 +1338,9 @@ param_pattern:
     { let loc = mkloc $startpos $endpos in
       Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None }
   | LPAREN; p = pattern; RPAREN { p }
+  (* `Some (1 | 2)` *)
+  | LPAREN; first = pattern; BAR; rest = separated_nonempty_list(BAR, pattern); RPAREN
+    { mk_or_pattern (first :: rest) }
   | LPAREN; first = pattern; COMMA; rest = separated_nonempty_list(COMMA, pattern); RPAREN
     { Ast_helper.Pat.tuple ~loc:(mkloc $startpos $endpos) (List.map (fun p -> (None, p)) (first :: rest)) Closed }
   (* `[]`, `[x]`, `[a; b]`: a list of exactly that length, built like the

@@ -1,0 +1,32 @@
+// Several patterns for one arm (or-patterns): in match, function, try,
+// and inside parentheses.
+
+fn add x y {
+  match x, y {
+    | None, _ | _, None -> 0
+    | Some a, Some b -> a + b
+  }
+}
+
+fn kind n { match n { | 0 | 1 -> "small" | 2 | 3 | 4 -> "medium" | _ -> "big" } }
+
+fn first_some { function | (Some x, _) | (None, Some x) -> x | (None, None) -> 0 }
+
+fn pick o { match o { | Some (1 | 2) -> "one or two" | Some _ -> "other" | None -> "none" } }
+
+fn safe_div a b {
+  try { a / b } with { | Division_by_zero | Not_found -> 0 }
+}
+
+fn main () {
+  println (add (Some 1) (Some 2));
+  println (add None (Some 2));
+  println (add (Some 1) None);
+  println (kind 1);
+  println (kind 3);
+  println (kind 9);
+  println (first_some (None, Some 5));
+  println (pick (Some 2));
+  println (pick (Some 7));
+  println (safe_div 1 0);
+}

@@ -312,6 +312,17 @@ a table
 5
 Alone : 2
 3
+=== run/or_patterns.scaml
+3
+0
+0
+small
+medium
+big
+5
+one or two
+other
+0
 === run/pow.scaml
 1024
 1
@@ -466,6 +477,10 @@ Error: No impl of `[]` (trait `indexable`) for list, int
 exit 1
 === errors/no_main.scaml
 errors/no_main.scaml: missing entry point (expected `fn main () { ... }`)
+exit 1
+=== errors/or_pattern_vars.scaml
+File "errors/or_pattern_vars.scaml", line 3, characters 26-47:
+Error: Variable a must occur on both sides of this | pattern
 exit 1
 === errors/syntax.scaml
 File "errors/syntax.scaml", line 2, characters 12-13:

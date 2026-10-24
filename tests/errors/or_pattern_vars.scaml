@@ -1,0 +1,5 @@
+// An or-pattern binds the same variables on both sides, as in OCaml.
+
+fn f x y { match x, y { | Some a, _ | _, Some b -> a | _ -> 0 } }
+
+fn main () { println (f None None); }
