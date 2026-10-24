@@ -59,6 +59,7 @@ syntax and the standard library may still change between minor versions.
 ### Standard library
 
 - `filterable` trait (`filter`) for `array` and `list`.
+- `foldable` for `string`, over its chars: `fold_left (^n c -> ..) 0 s`.
 - `conversionnable` impls for `string` and `bool`.
 - `to_char` in `conversionnable`: the char of a code (`to_char 97` is
   `'a'`), of a one-char string or bytes, `to_char (Some x)`; fails on the

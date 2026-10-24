@@ -248,6 +248,12 @@ impl foldable of list {
     fn fold_right { List.fold_right }
 }
 
+impl foldable of string {
+  type a = char
+  fn fold_left { String.fold_left }
+  fn fold_right { String.fold_right }
+}
+
 trait mappable {
     type a b c
     type t of 1
