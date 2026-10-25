@@ -3,7 +3,7 @@
 SCaml follows [semantic versioning](https://semver.org/). Until 1.0, the
 syntax and the standard library may still change between minor versions.
 
-## Unreleased
+## 0.2.0 (2026-10-25)
 
 ### Language
 
@@ -89,6 +89,11 @@ syntax and the standard library may still change between minor versions.
   no `#use` needed): `2 ** 10` is `1024`, by squaring; a negative exponent on
   an int is an error. Mixed, an int with a float is a float, as for `+`:
   `2. ** 3` is `8.`. It was OCaml's `**`, on floats only.
+- `stdlib/neural_network.scaml`, a first base for neural networks: the
+  trait `layer_ops` (`forward`, `backward`, `step` for a gradient descent
+  step), the layers `linear in_f out_f` (Xavier initialization) and
+  `relu_layer ()`, and `network [..]`, layers applied in order, itself a
+  `layer_ops`. Batches are `float matrix`, one example per row.
 - Slicing a string with a range (`s[a..b]`, `s[(a..b) + 2]`) takes linear
   time (`String.sub` for a step of 1), instead of building it char by char.
 - Binary trees (`btree`) move out of the core library to

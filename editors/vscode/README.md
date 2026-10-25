@@ -18,7 +18,7 @@ Or build a `.vsix` package:
 
 ```bash
 npx @vscode/vsce package
-code --install-extension scaml-0.1.0.vsix
+code --install-extension scaml-0.2.0.vsix
 ```
 
 ## File icon

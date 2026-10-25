@@ -2,7 +2,7 @@
   "name": "scaml",
   "displayName": "SCaml",
   "description": "Syntax highlighting for SCaml (Simple Caml)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "wer",
   "license": "MIT",
   "icon": "images/icon-128.png",

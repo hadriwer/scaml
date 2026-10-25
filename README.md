@@ -27,7 +27,7 @@ listed under *Unreleased* in the [changelog](CHANGELOG.md). For the latest
 stable version, check out its tag before installing:
 
 ```bash
-git checkout v0.1.0
+git checkout v0.2.0
 ```
 
 ## Requirements
