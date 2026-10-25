@@ -3,6 +3,8 @@
 SCaml follows [semantic versioning](https://semver.org/). Until 1.0, the
 syntax and the standard library may still change between minor versions.
 
+## Unreleased
+
 ## 0.2.0 (2026-10-25)
 
 ### Language
