@@ -1,0 +1,26 @@
+#use "stdlib/qs.scaml"
+
+// a generic function called on a stack and on a queue whose element type
+// nothing fixes yet: the impl of `:>` is picked from `Stack.t` / `Queue.t`
+fn copy_name sd name {
+  iter (^c -> c :> sd) name;
+}
+
+fn fill sd l { iter (^x -> x :> sd) l }
+
+fn main () {
+  let s, q = (make_stack (), make_queue ());
+  copy_name s "abc";
+  copy_name q "abc";
+  println s;
+  println q;
+
+  let s2 = make_stack ();
+  let q2 = make_queue ();
+  fill s2 [1; 2; 3];
+  fill q2 (4..7);
+  println (len s2, len q2);
+  println (map (^x -> x * 10) s2);
+  println (fold_left (^a x -> a + x) 0 q2);
+  println (is_empty (make_queue ()))
+}

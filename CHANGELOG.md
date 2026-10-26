@@ -29,6 +29,11 @@ syntax and the standard library may still change between minor versions.
   of `len` (trait `sizable`) for 'a Stdlib__Queue.t": the type variable
   of a `let` bound to an application, which isn't polymorphic, is now
   defaulted like any other free one.
+- A generic function called on a value whose type constructor is known but
+  not its parameters (`copy_name s "abc"` with `s` from `make_stack ()`,
+  a `_ Stack.t`) failed with "Unbound value `:>`": the trait call in it
+  couldn't pick an impl. The function is now specialized for the known
+  type constructor, the rest coming from its other arguments.
 
 ## 0.2.0 (2026-10-25)
 

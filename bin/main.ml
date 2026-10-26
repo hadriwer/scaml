@@ -2606,6 +2606,25 @@ let rec core_of_type (env : Env.t) (ty : Types.type_expr) : Parsetree.core_type 
     else Some (Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident "unit") loc) [])
   | _ -> None
 
+(* What [core_of_type] gives up on, read as far as it goes: a type
+   constructor whose arguments are not all known, with `_` for those
+   (`'a Stack.t` is `_ Stack.t`). That is enough for a clone to pick the
+   impl of a trait call on it (`push x sd`, `sd` a `Stack.t`): the element
+   type comes from the other arguments, once the clone's own calls are
+   resolved. None for anything else (a bare type variable, an arrow...). *)
+let partial_core_of_type (env : Env.t) (ty : Types.type_expr) : Parsetree.core_type option =
+  match Types.get_desc (Ctype.expand_head env ty) with
+  | Tconstr (path, args, _) when args <> [] ->
+    let name = Path.name path in
+    if String.contains name '(' then None
+    else
+      (match Longident.unflatten (String.split_on_char '.' name) with
+       | Some lid ->
+         let arg t = match core_of_type env t with Some c -> c | None -> Ast_helper.Typ.any ~loc () in
+         Some (Ast_helper.Typ.constr ~loc (Location.mkloc lid loc) (List.map arg args))
+       | None -> None)
+  | _ -> None
+
 (* [e] with its first parameters annotated with [tys], in order. *)
 let annotate_params (tys : Parsetree.core_type list) (e : Parsetree.expression) =
   let rec go tys (e : Parsetree.expression) =
@@ -2818,7 +2837,22 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
        | Texp_ident (Pident id, _, _) when not (List.exists (Ident.same id) !inside) ->
          (match List.find_opt (fun (gid, _) -> Ident.same gid id) !generic with
           | Some (_, (name, arity, def_key)) ->
-            let params = List.map (core_of_type e.exp_env) (arrow_params arity (Ctype.expand_head e.exp_env e.exp_type)) in
+            let param_types = arrow_params arity (Ctype.expand_head e.exp_env e.exp_type) in
+            let params = List.map (core_of_type e.exp_env) param_types in
+            (* Every parameter at least a known type constructor, some with
+               unknown arguments (`_ Stack.t`, from `let s = make_stack
+               ()`): enough for the clone to dispatch on, unlike a call
+               with a parameter nothing is known of, which waits. *)
+            let params =
+              if List.for_all Option.is_some params || is_clone_name name then params
+              else
+                let partial =
+                  List.map2
+                    (fun c t -> match c with Some _ -> c | None -> partial_core_of_type e.exp_env t)
+                    params param_types
+                in
+                if List.for_all Option.is_some partial && List.exists Option.is_none params then partial else params
+            in
             (* A partly known call (`for [1; 2] (^i -> ..)`) is cloned too,
                its unknown parameters left as `_`: the callback's type only
                becomes known once the clone's own trait calls (`iter`) are
