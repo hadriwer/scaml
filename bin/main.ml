@@ -544,7 +544,12 @@ let protected_vars : Types.type_expr list ref = ref []
 let protect_bound_vars (typed : Typedtree.structure) =
   let found = ref [] in
   let value_binding it (vb : Typedtree.value_binding) =
-    found := Ctype.free_variables vb.vb_pat.pat_type @ !found;
+    (* `let q = make_queue ()`: an application is not generalizable (value
+       restriction), so its type variables are not polymorphic, just not
+       yet known: they can be defaulted. *)
+    (match vb.vb_expr.exp_desc with
+     | Texp_apply _ -> ()
+     | _ -> found := Ctype.free_variables vb.vb_pat.pat_type @ !found);
     Tast_iterator.default_iterator.value_binding it vb
   in
   let it = { Tast_iterator.default_iterator with value_binding } in

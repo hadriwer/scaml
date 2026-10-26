@@ -1,0 +1,55 @@
+#use "stdlib/qs.scaml"
+
+// iterate over "()", when '(' => add '(' => stack = ['(']
+//                    when ')' => top stack = '(' => pop stack => stack = []
+fn dyck str {
+  let s = make_stack ();
+  iter (^c -> {
+    if is_empty s then c :> s
+    else {
+      if (top s == '(') && c == ')' then ignore (pop s)
+      else
+        c :> s
+    }
+  }) str;
+
+  is_empty s
+}
+
+// w1 = "ana" and w2 = "anna"
+fn is_palindrom word {
+  let n = len word;
+  let s = make_stack ();
+  let skip = if n % 2 == 0 then 0 else 1;
+  let mid = (n / 2);
+  iter (^i -> word[i] :> s) (0..mid);
+  forall (^i -> pop s == word[i]) ((mid+skip)..n)
+}
+
+fn main () {
+  let q = make_queue ();
+  println (len q);
+  println (is_empty q);
+  1 :> q;
+  println q;
+
+  let s = make_stack ();
+  println (len s);
+  println (is_empty s);
+  1 :> s;
+  println s;
+
+  let q' = init_queue 10 (^i -> 2 * i);
+  print "Before pop q' = "; print q'; print " len q' = "; println (len q');
+  pop q' |> ignore;
+  print "After pop q' = "; print q'; print " len q' = "; println (len q');
+  println (map (^e -> e / 2) q');
+
+  let s' = init_stack 10 Fun.id;
+  print "length of s' = "; println (len s');
+  print "top s' = "; println (top s');
+  println s';
+
+  print "Is a langage dyck : "; println (dyck "(((())))()(())");
+  print "Is palindrom : "; println (is_palindrom "hana");
+}

@@ -5,6 +5,31 @@ syntax and the standard library may still change between minor versions.
 
 ## Unreleased
 
+### Standard library
+
+- `stdlib/qs.scaml` (`#use "stdlib/qs.scaml"`): queues (`Queue.t`) and
+  stacks (`Stack.t`), `make_queue ()`, `make_stack ()`, `init_queue n f`,
+  `init_stack n f`. `x :> q` pushes on either (trait `pushable`), `pop`,
+  `top` and `is_empty` (trait `qsable`) work on both, `len`, and `iter`,
+  `iteri`, `fold_left`, `fold_right`, `map`, `mapi`, `map2` and `println`
+  over the elements, in the order they come out: front to back for a
+  queue, top to bottom for a stack (`println q` prints `Queue [ 1; 2; 3 ]`,
+  `println s` prints `Stack [ 3; 2; 1 ]`). `map` and its variants build a
+  new queue or stack of the same orientation.
+- `iterable` for `string`, over its chars: `iter (^c -> ..) s`, `iteri`.
+- Arithmetic on options, `Some 2 * Some 3` is `Some 6`: an operation with
+  a `None` gives the other operand (`Some 1 - None` is `Some 1`), so that
+  `None` acts as a missing value.
+- `x ** 2` on an int is a single multiplication.
+
+### Fixed
+
+- `len` (or any trait method) on a value created by a function call whose
+  type nothing fixes, `let q = make_queue (); len q`, failed with "No impl
+  of `len` (trait `sizable`) for 'a Stdlib__Queue.t": the type variable
+  of a `let` bound to an application, which isn't polymorphic, is now
+  defaulted like any other free one.
+
 ## 0.2.0 (2026-10-25)
 
 ### Language

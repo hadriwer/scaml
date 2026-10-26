@@ -1,0 +1,174 @@
+
+//**************************************************************************//
+//                                                                          //
+//                                  SCaml                                   //
+//                                                                          //
+//   Hadrien Lagier (wer)                                                   //
+//   Claude (Anthropic), co-author                                          //
+//                                                                          //
+//   Copyright (c) 2026 wer                                                 //
+//                                                                          //
+//   This file is distributed under the terms of the MIT License,           //
+//   see the file LICENSE at the root of the project.                       //
+//                                                                          //
+//**************************************************************************//
+// file that support stack and queue
+
+// operation of insertion
+
+trait pushable {
+  type a
+  type t of 1
+  op :> of a -> a t -> unit
+}
+
+impl pushable of Queue.t { op :> x q { Queue.push x q } }
+impl pushable of Stack.t { op :> x s { Stack.push x s } }
+
+// create queue or stack, function to init
+
+fn make_queue () {
+  Queue.create ()
+}
+
+fn make_stack () {
+  Stack.create ()
+}
+
+fn init_queue n f {
+  let q = make_queue ();
+  iter (^i -> {
+    (f i) :> q;
+  }) (0..n);
+  q
+}
+
+fn init_stack n f {
+  let s = make_stack ();
+  iter (^i -> {
+    (f i) :> s;
+  }) (0..n);
+  s
+}
+
+// elementary operation
+
+trait qsable {
+  type a
+  type qs of 1
+  fn pop of a qs -> a
+  fn top of a qs -> a
+  fn is_empty of a qs -> bool
+}
+
+impl qsable of Queue.t {
+  fn pop { Queue.pop }
+  fn top { Queue.top }
+  fn is_empty { Queue.is_empty }
+}
+
+impl qsable of Stack.t {
+  fn pop { Stack.pop }
+  fn top { Stack.top }
+  fn is_empty { Stack.is_empty }
+}
+
+// size of it
+
+impl sizable of Stack.t {
+  fn len s { Stack.length s }
+}
+
+impl sizable of Queue.t {
+  fn len q { Queue.length q }
+}
+
+// iteration and folding, in the order the elements come out:
+// front to back for a queue, top to bottom for a stack
+
+impl iterable of e Queue.t {
+  type a = e
+  fn iter f q { Queue.iter f q }
+  fn iteri f q { ignore (Queue.fold (^i x -> { f i x; i + 1 }) 0 q) }
+}
+
+impl iterable of e Stack.t {
+  type a = e
+  fn iter f s { Stack.iter f s }
+  fn iteri f s { ignore (Stack.fold (^i x -> { f i x; i + 1 }) 0 s) }
+}
+
+impl foldable of e Queue.t {
+  type a = e
+  fn fold_left f acc q { Queue.fold f acc q }
+  fn fold_right f q acc { List.fold_right f (List.rev (Queue.fold (^l x -> x :: l) [] q)) acc }
+}
+
+impl foldable of e Stack.t {
+  type a = e
+  fn fold_left f acc s { Stack.fold f acc s }
+  fn fold_right f s acc { List.fold_right f (List.rev (Stack.fold (^l x -> x :: l) [] s)) acc }
+}
+
+// display, in iteration order (front to back, top to bottom)
+
+impl showable of e Queue.t {
+  fn print q {
+    print "Queue [ ";
+    ignore (Queue.fold (^first x -> {
+      if not first then print "; " else ();
+      print x;
+      false
+    }) true q);
+    print " ]"
+  }
+
+  fn println q { print q; println "" }
+}
+
+impl showable of e Stack.t {
+  fn print s {
+    print "Stack [ ";
+    ignore (Stack.fold (^first x -> {
+      if not first then print "; " else ();
+      print x;
+      false
+    }) true s);
+    print " ]"
+  }
+
+  fn println s { print s; println "" }
+}
+
+// map, in iteration order; the result keeps the orientation of the original
+// (a stack is rebuilt from its bottom so that the top stays the top)
+
+fn queue_of_list l {
+  let q = Queue.create ();
+  List.iter (^x -> Queue.push x q) l;
+  q
+}
+
+fn stack_of_list l {
+  let s = Stack.create ();
+  List.iter (^x -> Stack.push x s) l;
+  s
+}
+
+// elements from the first out to the last out / from the bottom to the top
+
+fn queue_to_list q { List.rev (Queue.fold (^l x -> x :: l) [] q) }
+
+fn stack_to_list s { Stack.fold (^l x -> x :: l) [] s }
+
+impl mappable of Queue.t {
+  fn map f q { queue_of_list (List.map f (queue_to_list q)) }
+  fn mapi f q { queue_of_list (List.mapi f (queue_to_list q)) }
+  fn map2 f q1 q2 { queue_of_list (List.map2 f (queue_to_list q1) (queue_to_list q2)) }
+}
+
+impl mappable of Stack.t {
+  fn map f s { stack_of_list (List.map f (stack_to_list s)) }
+  fn mapi f s { stack_of_list (List.rev (List.mapi f (List.rev (stack_to_list s)))) }
+  fn map2 f s1 s2 { stack_of_list (List.map2 f (stack_to_list s1) (stack_to_list s2)) }
+}

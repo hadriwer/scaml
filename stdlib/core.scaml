@@ -157,6 +157,7 @@ trait powerable {
 impl powerable of int, int {
     op ** x n {
         if n < 0 then failwith "error ** : negative exponent on an int, use floats"
+        else if n == 2 then x * x
         else {
             fn aux acc b n {
                 if n == 0 then acc
@@ -193,6 +194,12 @@ impl iterable of array {
 impl iterable of list {
     fn iter { List.iter }
     fn iteri { List.iteri }
+}
+
+impl iterable of string {
+    type a = char
+    fn iter { String.iter }
+    fn iteri { String.iteri }
 }
 
 impl showable of array {
@@ -806,4 +813,20 @@ impl conversionnable of range {
     }
   }
   fn to_char _ { failwith "to_char : unsupported on range." }
+}
+
+fn apply_option f o1 o2 {
+  match o1, o2 {
+    | None, None -> None
+    | Some x, None | None, Some x -> Some x
+    | Some x, Some y -> Some (f x y)
+  }
+}
+
+impl arithm of option, option {
+  op + o1 o2 { apply_option (^x y -> x + y) o1 o2 }
+  op - o1 o2 { apply_option (^x y -> x - y) o1 o2 }
+  op * o1 o2 { apply_option (^x y -> x * y) o1 o2 }
+  op / o1 o2 { apply_option (^x y -> x / y) o1 o2 }
+  op % o1 o2 { apply_option (^x y -> x % y) o1 o2 }
 }
