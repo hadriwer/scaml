@@ -21,6 +21,27 @@ syntax and the standard library may still change between minor versions.
   a `None` gives the other operand (`Some 1 - None` is `Some 1`), so that
   `None` acts as a missing value.
 - `x ** 2` on an int is a single multiplication.
+- Bitwise operators on ints, trait `bitwise`: `a &! b` (and), `a |! b`
+  (or), `a ^! b` (xor), `a <! n` and `a >! n` (shifts, the second keeps
+  the sign), with the priorities of OCaml's `land`/`lor`/`lxor` (like `*`)
+  and `lsl`/`asr` (like `**`); and `bnot a`, the complement (trait
+  `bitnegatable`). See [Functions and operators](docs/01_functions.md).
+- `[]?` in the `indexable` trait, for arrays and strings, with an index or
+  a range (`a[3]?` is `None` out of bounds, `a[-1]?` and `a[1..9]?` too,
+  instead of raising) and hash maps (`h["zz"]?` is
+  `None` for a missing key, via `Hashtbl.find_opt`; `h["zz"]` still raises
+  `Not_found`).
+
+### Language
+
+- `op []?`, an indexing operator that reads like `[]` but is written
+  `a[i]?`, so a type can answer a lookup differently, with an `option`
+  instead of an exception. It takes 2 arguments, and the `?` must be glued
+  to the `]` (`f h[k] ?x=1` still passes an optional argument). With
+  several indices each one is looked up in turn, the first to fail giving
+  `None` (`m[-1, -1]?`). See [Functions and operators](docs/01_functions.md).
+- `^` can be part of an operator (`^!`), still starting a lambda on its own
+  (`^x -> ..`).
 
 ### Fixed
 
@@ -34,6 +55,12 @@ syntax and the standard library may still change between minor versions.
   a `_ Stack.t`) failed with "Unbound value `:>`": the trait call in it
   couldn't pick an impl. The function is now specialized for the known
   type constructor, the rest coming from its other arguments.
+- A generic function calling another with an argument only known once it
+  is itself specialized (`fn parse_tuple l { split_apply_on_char to_int ','
+  l[1..2] }`, called on strings) failed with "Can't tell which impl of
+  `len` (trait `sizable`) to use": the inner call was specialized too early,
+  from what was still unknown, and stayed stuck. It now waits for the
+  outer function's own specialization.
 
 ## 0.2.0 (2026-10-25)
 

@@ -111,6 +111,7 @@ impl concetanable of Hashtbl.t {
 
 impl indexable of Hashtbl.t, _ {
   op [] { Hashtbl.find }
+  op []? { Hashtbl.find_opt }
   op []= { Hashtbl.replace }
   op []+= hm k v { hm[k] = hm[k] + v }
 }

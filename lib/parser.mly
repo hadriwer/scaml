@@ -216,9 +216,11 @@ let mkapp (start, head, rev_args) =
     Ast_helper.Exp.apply ~loc:(mkloc start stop) head (List.map (fun (l, e, _) -> (l, e)) args)
 
 (* How many arguments an operator takes: 3 for an indexing one with a
-   suffix (`[]=`, `[]+=`: the container, the index, the value), else 2. *)
+   suffix (`[]=`, `[]+=`: the container, the index, the value), else 2
+   (`[]?` reads, like `[]`: `h[k]?`). *)
 let op_arity name =
-  if String.length name > 2 && String.sub name 0 2 = "[]" then 3 else 2
+  if name = "[]?" then 2
+  else if String.length name > 2 && String.sub name 0 2 = "[]" then 3 else 2
 
 let mkbinop loc op e1 e2 =
   Ast_helper.Exp.apply ~loc (mkident loc op) [ (Nolabel, e1); (Nolabel, e2) ]
@@ -270,6 +272,35 @@ let mkassign ?(op = "[]=") loc arr (index : expression) index_start v =
     | [] -> assert false
   in
   go arr (split_indices index index_start)
+
+(* `t[i]?` -> `[]?` t i: a read that an impl can answer differently from
+   `[]`, e.g. an `option` for a hash map's missing key or an array's bad
+   index. With several indices each one is looked up in turn, and the first
+   to fail ends it with `None`: `m[i, j]?` is `match m[i]? with Some r ->
+   r[j]? | None -> None`, so `m[-1, 0]?` is `None` too. After a range
+   (`m[0..n, j]?`) the earlier indices read normally, as for `m[0..n, j]`. *)
+let mkquery loc arr (index : expression) index_start =
+  let query loc arr i = Ast_helper.Exp.apply ~loc (index_fn loc "[]?" "Array.get") [ (Nolabel, arr); (Nolabel, i) ] in
+  let indices = split_indices index index_start in
+  let rec chain arr = function
+    | [] -> assert false
+    | [ last ] -> query loc arr last
+    | i :: rest ->
+      let qloc = { loc with loc_end = i.pexp_loc.loc_end } in
+      let pt = point i.pexp_loc.loc_end in
+      let name = "__scaml_q" in
+      let row = Ast_helper.Pat.construct ~loc:pt (Location.mkloc (Longident.Lident "Some") pt)
+          (Some ([], Ast_helper.Pat.var ~loc:pt (Location.mkloc name pt))) in
+      let none_p = Ast_helper.Pat.construct ~loc:pt (Location.mkloc (Longident.Lident "None") pt) None in
+      let none_e = Ast_helper.Exp.construct ~loc:pt (Location.mkloc (Longident.Lident "None") pt) None in
+      Ast_helper.Exp.match_ ~loc:pt (query qloc arr i)
+        [ Ast_helper.Exp.case row (chain (mkident pt name) rest); Ast_helper.Exp.case none_p none_e ]
+  in
+  match List.rev indices with
+  | [] -> assert false
+  | last :: rev_init when List.exists is_range_expr rev_init ->
+    query loc (mkget_indices loc arr (List.rev rev_init)) last
+  | _ -> chain arr indices
 
 (* The length of `lo..hi` / `lo..=hi` when both bounds are int literals and
    there's no step, to report a wrong number of names at compile time. *)
@@ -640,6 +671,7 @@ let load_used_file loc path : Parsetree.structure =
 %token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TRAIT IMPL TYPE OF
 %token QUESTION
 %token <string> INDEX_OP
+%token INDEX_QUERY
 %token EOF DOT BAR MATCH FUNCTION INDEX_LBRACK LBRACKBAR BARRBRACK TRY WITH EXCEPTION
 
 (* Binary operators, lowest priority first, as in OCaml (see
@@ -693,6 +725,8 @@ op_name:
   | c = binop { c }
   | LBRACK; RBRACK { "[]" }
   | LBRACK; RBRACK; EQ { "[]=" }
+  (* `[]?`: `h[k]?`, see [mkquery]. *)
+  | LBRACK; RBRACK; QUESTION { "[]?" }
   (* `[]+=`, `[]<-`...: `a[i] += v`, see [assignment]. *)
   | LBRACK; RBRACK; c = binop { "[]" ^ c }
 
@@ -1394,6 +1428,8 @@ indexable:
   | a = indexable; INDEX_LBRACK; index = expr; RBRACK
       { let loc = mkloc $startpos $endpos in
         mkget_indices loc a (split_indices index $startpos(index)) }
+  | a = indexable; INDEX_LBRACK; index = expr; RBRACK; INDEX_QUERY
+      { mkquery (mkloc $startpos $endpos) a index $startpos(index) }
   | e = indexable; DOT; f = IDENT
     {
       Ast_helper.Exp.field ~loc:(mkloc $startpos $endpos) e

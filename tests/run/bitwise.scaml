@@ -1,0 +1,18 @@
+fn main () {
+  println (12 &! 10);
+  println (12 |! 10);
+  println (12 ^! 10);
+  println (1 <! 4);
+  println (256 >! 2);
+  println ((0 - 8) >! 1);
+  println (bnot 0);
+  println (bnot 5 &! 7);
+  // priorities of OCaml's land/lor/lxor (like `*`) and lsl/asr (like `**`)
+  println (1 + 2 &! 3);
+  println (6 ^! 3 |! 8);
+  println (1 <! 2 <! 1);
+  println (5 &! 3 == 1);
+  println (map (^i -> 1 <! i) [0; 1; 2; 3]);
+  println (fold_left (^m i -> m |! (1 <! i)) 0 [0; 2; 3]);
+  println (true && false)
+}

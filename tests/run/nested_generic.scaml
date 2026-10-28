@@ -1,0 +1,16 @@
+// a generic function calling another one with arguments only known in its
+// own clones (`l` below): `parse_tuple` is cloned for `string` first, and
+// `split_apply_on_char`, called from it, then sees a string
+fn parse_tuple l {
+  let n = len l;
+  split_apply_on_char to_int ',' l[1..(n-1)]
+}
+
+fn parse goal buttons { function
+  | [] -> (goal, buttons)
+  | s::xs -> parse goal ((parse_tuple s)::buttons) xs
+}
+
+fn main () {
+  println (parse "" [] ["(1,2)"; "(3)"])
+}

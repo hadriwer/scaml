@@ -8,6 +8,10 @@ exception Lex_error of string
    priority as there, e.g. `*.` like `*`). *)
 let operator c =
   if String.length c >= 2 && String.sub c 0 2 = "**" then OP_POW c
+  (* The bitwise operators, with the priority of OCaml's `land`, `lor`,
+     `lxor` (like `*`) and `lsl`, `asr` (like `**`). *)
+  else if c = "&!" || c = "|!" || c = "^!" then OP_MUL c
+  else if c = "<!" || c = ">!" then OP_POW c
   else
     match c.[0] with
     | '*' | '/' | '%' -> OP_MUL c
@@ -29,7 +33,7 @@ let alnum = alpha | digit
 let ident = alpha alnum*
 let uindent = ['A'-'Z'] alnum*
 let qualified_ident = (uindent '.')+ ident
-let symbols = ['+' '-' '*' '/' '<' '>' ':' '%' '.' '|' '=' '&' '!' '@']
+let symbols = ['+' '-' '*' '/' '<' '>' ':' '%' '.' '|' '=' '&' '!' '@' '^']
 let custom_sym = symbols+
 let whitespace = [' ' '\t' '\r']
 let newline = '\n'
@@ -137,6 +141,10 @@ let token lexbuf =
     (* `a[i] += v`: an operator right after an index's `]` is the rest of
        an indexing operator, `[]+=`, when one is declared (otherwise it's
        the binary operator: `a[i] + v`). *)
+    (* `h[k]?` (a declared `[]?`), the `?` glued to the `]`: not an
+       optional argument, `f h[k] ?x=1`. *)
+    | QUESTION, Some (lb, _, end_cnum)
+      when lb == lexbuf && !after_index && end_cnum = start && Op_names.is_declared "[]?" -> INDEX_QUERY
     | _ when same_buf && !after_index ->
       (match operator_symbol tok with
        | Some c when Op_names.is_declared ("[]" ^ c) -> INDEX_OP c

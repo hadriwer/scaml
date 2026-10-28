@@ -1,0 +1,63 @@
+#use "stdlib/hashmap.scaml"
+
+// a `?` glued to the `]` is the query; with a space it is an optional argument
+fn foo ?(x=0) y { x + y }
+
+fn test_optional () {
+  let h = make_hashmap 4;
+  h["a"] = 1;
+  println (foo h["a"] x=5);
+  println (foo h["a"] ?x=(Some 7));
+  println (foo h["a"])
+}
+
+fn get_or_zero a i {
+  match a[i]? { Some v -> v | None -> 0 }
+}
+
+// out of bounds is None, not an exception
+fn test_array () {
+  let a = [|10; 20; 30|];
+  println a[0]?;
+  println a[3]?;
+  println a[-1]?;
+  println (get_or_zero a 1);
+  println (get_or_zero a 99);
+  println ([||][0]? == None);
+  let m = [| [|1; 2|]; [|3; 4|] |];
+  println m[1, 0]?;
+  println m[1, 5]?;
+  // every index is checked, in turn
+  println m[-1, -1]?;
+  println m[7, 0]?;
+  println m[0, 1]?;
+  let a = [|10; 20; 30|];
+  println a[0..2]?;
+  println a[1..9]?;
+  let w = "hello";
+  println w[1..3]?;
+  println w[9]?
+}
+
+fn lookup h k { h[k]? }
+
+fn main () {
+  let h = make_hashmap 4;
+  h["a"] = 1;
+  h["b"] = 2;
+  println h["a"]?;
+  println h["zz"]?;
+  println (h["b"]? + Some 10);
+  println (lookup h "a");
+  println (lookup h "nope");
+  match h["a"]? { Some v -> println v | None -> println "none" };
+  h["a"] += 5;
+  println h["a"];
+  let g = make_hashmap 4;
+  g[(1, 2)] = "p";
+  println g[(1, 2)]?;
+  println (len h);
+  test_optional ();
+  test_array ()
+}
+

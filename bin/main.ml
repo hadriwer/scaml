@@ -2858,7 +2858,12 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
                becomes known once the clone's own trait calls (`iter`) are
                resolved from the known ones. Never from a clone itself, so
                a clone that stays partly generic isn't re-cloned forever. *)
-            let partial_ok = List.exists Option.is_some params && not (is_clone_name name) in
+            (* Not from inside another generic function's own body: that one
+               gets cloned first, and its clone knows more (`parse_tuple l`
+               calling `split_apply_on_char f c l[1..2]`: `l` is only
+               known in the clone). A clone made here, from what is
+               still unknown, would stay stuck. *)
+            let partial_ok = List.exists Option.is_some params && not (is_clone_name name) && !inside = [] in
             if List.length params = arity && (List.for_all Option.is_some params || partial_ok) then begin
               let tys = List.map (function Some t -> t | None -> Ast_helper.Typ.any ~loc ()) params in
               let sig_text = String.concat " -> " (List.map (Format.asprintf "%a" Pprintast.core_type) tys) in

@@ -19,12 +19,14 @@ trait indexable {
     op [] of a -> b -> c
     op []= of a -> b -> c -> unit
     op []+= of a -> b -> c -> unit
+    op []? of a -> b -> c
 }
 
 impl indexable of array, int {
     op [] { Array.get }
     op []= { Array.set }
     op []+= a i v { a[i] = a[i] + v }
+    op []? a i { try Some a[i] with {| Invalid_argument _ -> None }}
 }
 
 impl indexable of bytes, int {
@@ -34,6 +36,7 @@ impl indexable of bytes, int {
 
 impl indexable of string, int {
     op [] { String.get }
+    op []? s i { try Some s[i] with {| Invalid_argument _ -> None}}
 }
 
 trait showable {
@@ -149,6 +152,31 @@ op > a b { scaml_gt a b }
 op >= a b { scaml_geq a b }
 op == a b { scaml_eq a b }
 op != a b { scaml_neq a b }
+
+trait bitwise {
+    op &! of a -> b -> c
+    op |! of a -> b -> c
+    op ^! of a -> b -> c
+    op <! of a -> b -> c
+    op >! of a -> b -> c
+}
+
+impl bitwise of int, int {
+    op &! { Stdlib.land }
+    op |! { Stdlib.lor }
+    op ^! { Stdlib.lxor }
+    op <! { Stdlib.lsl }
+    op >! { Stdlib.asr }
+}
+
+trait bitnegatable {
+    type a
+    fn bnot of a -> a
+}
+
+impl bitnegatable of int {
+    fn bnot { Stdlib.lnot }
+}
 
 trait powerable {
     op ** of a -> b -> c
@@ -628,6 +656,7 @@ impl indexable of string, range {
             | RangeStep (low, high, comp, step) -> walk low high comp step
         }
     }
+    op []? s r { try Some s[r] with {| Invalid_argument _ -> None}}
 }
 
 impl indexable of array, range {
@@ -646,6 +675,8 @@ impl indexable of array, range {
             | RangeStep (low, high, comp, step) -> walk low high comp step
         }
     }
+
+    op []? a r { try Some a[r] with {| Invalid_argument _ -> None}}
 }
 
 fn maxn a b { if a > b then a else b }

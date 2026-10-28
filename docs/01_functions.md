@@ -8,6 +8,7 @@ Functions and operators share the same definition syntax:
 fn <name> <args>* { <body> }
 op <symbols> <arg1> <arg2> { <body> }                 // a <symbols> b
 op [] <arg1> <arg2> { <body> }                        // a[i]
+op []? <arg1> <arg2> { <body> }                       // a[i]?
 op []<symbols> <arg1> <arg2> <arg3> { <body> }        // a[i] <symbols> v
 ```
 
@@ -41,7 +42,8 @@ A few rules:
 - The last expression of a block is its return value. No `return` keyword
   is needed.
 - An operator takes exactly two arguments, except an indexing one with
-  symbols after its `[]` (`[]=`, `[]+=`...), which takes exactly three.
+  symbols after its `[]` (`[]=`, `[]+=`...), which takes exactly three
+  (`[]?` takes two).
 
 ### Destructuring parameters
 
@@ -140,6 +142,38 @@ fn main () {
 An operator's precedence comes from its first character, as in OCaml. `|+|`
 starts with `|`, so it binds like a comparison, while an operator starting
 with `*` binds like a multiplication.
+
+### Bitwise operators
+
+On ints, the standard library has the bitwise operators, written with three
+characters (a lone `|`, `^` or `&` are already taken: a pattern's `|`, a
+lambda's `^`, the boolean `&&`):
+
+| Operator | Meaning | Priority, as OCaml's |
+|---|---|---|
+| `a &! b` | and | `land`, like `*` |
+| `a \|\|\| b` | or | `lor`, like `*` |
+| `a ^! b` | xor | `lxor`, like `*` |
+| `a <! n` | shift left | `lsl`, like `**` |
+| `a >! n` | shift right, keeping the sign | `asr`, like `**` |
+| `bnot a` | complement (a function) | |
+
+```rust
+fn main () {
+    println (12 &! 10);            // 8
+    println (12 |! 10);            // 14
+    println (12 ^! 10);            // 6
+    println (1 <! 4);              // 16
+    println (256 >! 2);            // 64
+    println (bnot 5 &! 7);         // 2: (bnot 5) &! 7
+    println (1 + 2 &! 3);          // 3: 1 + (2 &! 3)
+}
+```
+
+They are in the `bitwise` trait, so they can be defined for another type
+(`impl bitwise of mytype, mytype { op &! a b { .. } .. }`). A set of small
+indices is often best kept as one int, `1 <! i` being the bit `i`, and
+`state ^! mask` toggling several at once.
 
 ## Recursion
 
@@ -353,6 +387,48 @@ A few rules:
   declared: the indexing form is only used for operators that exist.
 - Several indices work like for `[]=`: `m[i, j] += v` changes `m[i][j]`,
   and `m[0..n, j] += v` does it on each of those rows.
+
+### Lookups that may fail: `[]?`
+
+`a[i]?` calls the operator `[]?`. It reads like `[]`, but a type can answer
+it differently: in the standard library, with an `option` instead of an
+exception when there is nothing at that index. `a[i]` itself is unchanged.
+
+```rust
+#use "stdlib/hashmap.scaml"
+
+fn main () {
+    let a = [|10; 20; 30|];
+    println a[1]?;                      // Some 20
+    println a[3]?;                      // None: out of bounds
+    println a[-1]?;                     // None
+
+    let h = make_hashmap 4;
+    h["a"] = 1;
+    println h["a"]?;                    // Some 1
+    println h["zz"]?;                   // None, where h["zz"] raises Not_found
+
+    let i = 5;
+    match a[i]? {
+        | Some v -> println v
+        | None -> println "out of range"      // out of range
+    }
+}
+```
+
+It is defined for arrays, strings (with an index or a range) and hash maps, and you can define it for your own
+types like `[]`: `op []? a i { .. }`. A few rules:
+
+- `[]?` takes 2 arguments, the container and the index, and returns what you
+  choose, usually an `option`.
+- The `?` is glued to the `]`: `f a[i]? x` is the lookup, while `f a[i] ?x=1`
+  (a space) passes the [optional argument](#optional-arguments) `x`.
+- The `?` form is only used once an operator `[]?` is declared, as for the
+  other indexing operators.
+- With several indices, each one is looked up in turn and the first to fail
+  gives `None`: `m[i, j]?` is `m[i]?` then `j` in that row, so `m[-1, -1]?`
+  and `m[7, 0]?` are `None`. (After a range, `m[0..n, j]?`, the earlier
+  indices read normally.)
 
 ## Constants
 

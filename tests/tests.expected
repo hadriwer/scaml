@@ -21,6 +21,22 @@ xyxy
 3
 1
 yes
+=== run/bitwise.scaml
+8
+14
+6
+16
+64
+-4
+-1
+2
+3
+13
+16
+true
+[ 1; 2; 4; 8 ]
+13
+false
 === run/btree.scaml
 2
 ├── 1
@@ -230,6 +246,34 @@ trois
 [| 12; 6; 4 |]
 [| 42; 6; 4 |]
 true
+=== run/index_query.scaml
+Some 1
+None
+Some 12
+Some 1
+None
+1
+6
+Some "p"
+2
+6
+8
+1
+Some 10
+None
+None
+20
+0
+true
+Some 3
+None
+None
+None
+Some 2
+Some [| 10; 20 |]
+None
+Some "el"
+None
 === run/local_generic.scaml
 [ 'a' ]
 (0, 2, [ (0, "a", 0) ])
@@ -279,6 +323,8 @@ true
 3
 buf
 2
+=== run/nested_generic.scaml
+("", [ [ 3 ]; [ 1; 2 ] ])
 === run/nested_impls_generic.scaml
 | 1 2 |
 | 3 4 |
