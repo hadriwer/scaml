@@ -40,6 +40,12 @@ syntax and the standard library may still change between minor versions.
   to the `]` (`f h[k] ?x=1` still passes an optional argument). With
   several indices each one is looked up in turn, the first to fail giving
   `None` (`m[-1, -1]?`). See [Functions and operators](docs/01_functions.md).
+- A constructor of an OCaml module can be written qualified, in an
+  expression or a pattern: `match x { | Str.Text s -> .. | Str.Delim s -> .. }`
+  (a qualified name is a constructor when its last segment is capitalized).
+- `Str` is linked into the executables (and found without the OCaml 5
+  "auto include" alert), so `Str.regexp`, `Str.full_split`...
+  can be used.
 - `^` can be part of an operator (`^!`), still starting a lambda on its own
   (`^x -> ..`).
 

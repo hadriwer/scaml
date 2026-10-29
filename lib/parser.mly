@@ -67,6 +67,12 @@ let qualified_lid txt =
   | Some l -> l
   | None -> Longident.Lident txt
 
+(* `Str.Text`: a qualified name is a constructor when its last segment is
+   capitalized, as for an unqualified one. *)
+let qualified_is_constructor txt =
+  let last = match String.rindex_opt txt '.' with Some i -> String.sub txt (i + 1) (String.length txt - i - 1) | None -> txt in
+  last <> "" && last.[0] >= 'A' && last.[0] <= 'Z'
+
 let mkqident loc txt =
   Ast_helper.Exp.ident ~loc (Location.mkloc (qualified_lid txt) loc)
 
@@ -1332,6 +1338,12 @@ app_pattern:
         raise (Location.Error (Location.error ~loc
           (Printf.sprintf "only a constructor can take an argument in a pattern, not `%s`" c)));
       Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident c) (mkloc $startpos(c) $endpos(c))) (Some ([], arg)) }
+  | c = QIDENT; arg = simple_pattern
+    { let loc = mkloc $startpos $endpos in
+      if not (qualified_is_constructor c) then
+        raise (Location.Error (Location.error ~loc
+          (Printf.sprintf "only a constructor can take an argument in a pattern, not `%s`" c)));
+      Ast_helper.Pat.construct ~loc (Location.mkloc (qualified_lid c) (mkloc $startpos(c) $endpos(c))) (Some ([], arg)) }
   | p = simple_pattern { p }
 
 simple_pattern:
@@ -1363,6 +1375,12 @@ param_pattern:
       if x = "_" then Ast_helper.Pat.any ~loc ()
       else if is_capitalized x then Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident x) loc) None
       else Ast_helper.Pat.var ~loc (Location.mkloc x loc) }
+  | c = QIDENT
+    { let loc = mkloc $startpos $endpos in
+      if not (qualified_is_constructor c) then
+        raise (Location.Error (Location.error ~loc
+          (Printf.sprintf "`%s` is not a constructor, it can't be used in a pattern" c)));
+      Ast_helper.Pat.construct ~loc (Location.mkloc (qualified_lid c) loc) None }
   | n = INT { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.int n) }
   | s = STRING { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.string s) }
   | c = CHAR { Ast_helper.Pat.constant ~loc:(mkloc $startpos $endpos) (Ast_helper.Const.char c) }
@@ -1467,7 +1485,11 @@ atom:
         if Char.uppercase_ascii x.[0] = x.[0] && x.[0] <> '_' && x.[0] <> '\''
         then Ast_helper.Exp.construct ~loc (Location.mkloc (Longident.Lident x) loc) None
         else mkident loc x }
-  | q = QIDENT { mkqident (mkloc $startpos $endpos) q }
+  | q = QIDENT
+      { let loc = mkloc $startpos $endpos in
+        if qualified_is_constructor q
+        then Ast_helper.Exp.construct ~loc (Location.mkloc (qualified_lid q) loc) None
+        else mkqident loc q }
   | LPAREN; RPAREN { mkunit (mkloc $startpos $endpos) }
   | LPAREN; c = binop; RPAREN
       { 

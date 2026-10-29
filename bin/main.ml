@@ -3335,6 +3335,7 @@ let () =
             vbs
         | _ -> ())
       user_structure;
+    Clflags.include_dirs := "+str" :: !Clflags.include_dirs;
     Compmisc.init_path ();
     (* "unreachable case": only ever about [never_type_name], the empty type
        a call like `f None` is cloned with when nothing fixes the option's
@@ -3528,7 +3529,7 @@ let () =
     close_out oc;
 
     let cmd =
-      Printf.sprintf "ocamlfind ocamlopt -w -56 %s -o %s"
+      Printf.sprintf "ocamlfind ocamlopt -package str -linkpkg -w -56 %s -o %s"
         (Filename.quote ml_file) (Filename.quote exe_file)
     in
     let status = Sys.command cmd in

@@ -1,0 +1,11 @@
+fn show x { match x {
+  | Str.Text s -> "T:" + s
+  | Str.Delim s -> "D:" + s
+} }
+fn mk () { Str.Text "x" }
+fn is_d { function | Str.Delim _ -> true | _ -> false }
+fn main () {
+  println (map show (Str.full_split (Str.regexp "o") "foo"));
+  println (is_d (mk ()));
+  println (is_d (Str.Delim "a"))
+}

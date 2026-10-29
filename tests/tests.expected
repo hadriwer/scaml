@@ -380,6 +380,10 @@ other
 1.41421356237
 0.5
 1.25
+=== run/qualified_constructor.scaml
+[ "T:f"; "D:o"; "D:o" ]
+false
+true
 === run/queue_stack.scaml
 Stack [ 'c'; 'b'; 'a' ]
 Queue [ 'a'; 'b'; 'c' ]
