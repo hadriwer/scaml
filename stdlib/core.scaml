@@ -861,3 +861,7 @@ impl arithm of option, option {
   op / o1 o2 { apply_option (^x y -> x / y) o1 o2 }
   op % o1 o2 { apply_option (^x y -> x % y) o1 o2 }
 }
+
+fn for it f {
+  iter f it;
+}
