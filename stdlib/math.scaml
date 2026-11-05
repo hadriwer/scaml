@@ -67,3 +67,7 @@ fn uniform a b {
   else
     a + Random.float (b - a)
 }
+
+fn fact n {
+  fold_left (*) 1 (1..=n)
+}
