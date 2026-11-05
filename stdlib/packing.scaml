@@ -1,0 +1,6 @@
+
+fn pack n b { (n <! 1) |! (if b then 1 else 0) }
+fn unpack_int p { p >! 1 }
+fn unpack_bool p { (p &! 1) == 1 }
+fn replace_int p n { (n lsl 1) lor (p land 1) }
+fn replace_bool p b { (p land lnot 1) lor (Bool.to_int b) }
