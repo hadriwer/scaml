@@ -289,6 +289,10 @@ None
 [ 'a' ]
 (0, 2, [ (0, "a", 0) ])
 (0, 4, [ (2, "b", 2); (0, "b", 0); (0, "a", 0) ])
+=== run/main_argv.scaml
+1
+1
+true
 === run/matrix_fold.scaml
 10.
 [ 4.; 3.; 2.; 1. ]
@@ -535,9 +539,13 @@ exit 1
 File "errors/impl_one_param_dict.scaml", lines 1-4, characters 0-1:
 Error: This impl uses trait `showable` on its parameter `k` only: with several parameters, it must use one on each of them
 exit 1
+=== errors/main_three_params.scaml
+File "errors/main_three_params.scaml", line 3, characters 0-20:
+Error: `main` takes `()`, or the command line: write `fn main () { ... }`, `fn main argv { ... }` or `fn main argc argv { ... }`
+exit 1
 === errors/main_without_unit.scaml
 File "errors/main_without_unit.scaml", lines 2-4, characters 0-1:
-Error: `main` takes `()`: write `fn main () { ... }`
+Error: `main` takes `()`, or the command line: write `fn main () { ... }`, `fn main argv { ... }` or `fn main argc argv { ... }`
 exit 1
 === errors/nested_clone_type_error.scaml
 File "errors/nested_clone_type_error.scaml", line 8, characters 22-31:
@@ -566,7 +574,7 @@ File "errors/no_impl.scaml", line 3, characters 13-16:
 Error: No impl of `[]` (trait `indexable`) for list, int
 exit 1
 === errors/no_main.scaml
-errors/no_main.scaml: missing entry point (expected `fn main () { ... }`)
+errors/no_main.scaml: missing entry point (expected `fn main () { ... }`, or `fn main argc argv { ... }`)
 exit 1
 === errors/or_pattern_vars.scaml
 File "errors/or_pattern_vars.scaml", line 3, characters 26-47:

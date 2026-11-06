@@ -26,6 +26,10 @@ syntax and the standard library may still change between minor versions.
   3.863 ms`. Wall clock, through `unix`, now linked into the executables.
   The memory is compacted before the clock starts (not counted), so that
   successive `#time` compare fairly.
+- `main` can take the command line: `fn main argc argv { .. }`, as in C
+  (`argv` a `string array` starting with the program's name, `argc` its
+  length), `fn main argv { .. }`, or `fn main(argc, argv) { .. }` in the
+  imperative style. `fn main () { .. }` is still the usual form.
 
 ### Standard library
 
@@ -73,6 +77,8 @@ syntax and the standard library may still change between minor versions.
 
 ### Compiler
 
+- `-o <file>` names the executable (`scamlc hello.scaml -o hello`), instead
+  of `<source>.exe`.
 - Comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`) on `int`, `float`,
   `char`, `bool` and `string` compile to OCaml's native ones instead of
   its polymorphic comparison, an external call: up to twice as fast on

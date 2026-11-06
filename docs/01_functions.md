@@ -127,6 +127,20 @@ fn main () {
 }
 ```
 
+`main` can also take the command line, as in C: `argv`, an array of
+strings starting with the program's name, and `argc`, its length.
+
+```rust
+fn main argc argv {
+    if argc > 1 then println ("Hello, " + argv[1] + "!")
+    else println "usage: hello <name>"
+}
+```
+
+`./hello Ada` prints `Hello, Ada!`. `fn main argv { ... }` takes only the
+array, and `fn main(argc, argv) { ... }` works too, in the
+[imperative style](#imperative-style).
+
 And your first operator, the sum of absolute values:
 
 ```rust

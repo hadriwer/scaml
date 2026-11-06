@@ -3394,12 +3394,27 @@ let warn_stdlib_overrides (stdlib : Parsetree.structure) (user : Parsetree.struc
   let stdlib' = if renames = [] then stdlib else (rename_refs renames).structure (rename_refs renames) stdlib in
   (stdlib', user')
 
+let usage () =
+  Printf.eprintf "Usage: %s [-o <file>] [--tokens] [--verbose|-v] [--keep|-k] [--check-stdlib] <file.scaml>\n       %s --version\n" Sys.argv.(0) Sys.argv.(0);
+  exit 1
+
 let () =
   let args = List.tl (Array.to_list Sys.argv) in
   if List.mem "--version" args then begin
     Printf.printf "scamlc %s\n" Version.version;
     exit 0
   end;
+  (* `-o <file>`: the executable's name (`<source>.exe` by default), taken
+     out of the arguments before looking for the source file. *)
+  let output, args =
+    let rec go out acc = function
+      | [] -> (out, List.rev acc)
+      | "-o" :: f :: rest when out = None && f <> "" && f.[0] <> '-' -> go (Some f) acc rest
+      | "-o" :: _ -> usage ()
+      | a :: rest -> go out (a :: acc) rest
+    in
+    go None [] args
+  in
   let verbose = List.mem "--verbose" args || List.mem "-v" args in
   let tokens_mode = List.mem "--tokens" args in
   (* Keep every intermediate file next to the source (.generated.ml, .cmi,
@@ -3435,26 +3450,67 @@ let () =
     in
 
     if not (has_main user_structure) then begin
-      Printf.eprintf "%s: missing entry point (expected `fn main () { ... }`)\n" filename;
+      Printf.eprintf "%s: missing entry point (expected `fn main () { ... }`, or `fn main argc argv { ... }`)\n" filename;
       exit 1
     end;
     (* `fn main { .. }`, without `()`, is no function (#11): its body would
-       run as `main` is defined, and `main ()` fail far from it. *)
-    List.iter
-      (fun (item : Parsetree.structure_item) ->
-        match item.pstr_desc with
-        | Pstr_value (_, vbs) ->
-          List.iter
-            (fun (vb : Parsetree.value_binding) ->
-              match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
-              | Ppat_var { txt = "main"; loc }, desc when (match desc with Pexp_function _ -> false | _ -> true) ->
-                Location.print_report Format.err_formatter
-                  (Location.error ~loc "`main` takes `()`: write `fn main () { ... }`");
-                exit 1
-              | _ -> ())
-            vbs
-        | _ -> ())
-      user_structure;
+       run as `main` is defined, and `main ()` fail far from it. `fn main
+       argv { .. }` and `fn main argc argv { .. }` get the command line: they
+       become a `main ()` passing it, `Sys.argv` (the program's name first)
+       and its length, so that the program is still started by `main ()`. *)
+    let main_error loc =
+      Location.print_report Format.err_formatter
+        (Location.error ~loc "`main` takes `()`, or the command line: write `fn main () { ... }`, `fn main argv { ... }` or `fn main argc argv { ... }`");
+      exit 1
+    in
+    let with_command_line loc (f : Parsetree.expression) =
+      let rec params (e : Parsetree.expression) =
+        match e.pexp_desc with
+        | Pexp_function (ps, _, Pfunction_body b) -> List.map (fun (p : Parsetree.function_param) -> p.pparam_desc) ps @ params b
+        | Pexp_function (ps, _, Pfunction_cases _) -> List.map (fun (p : Parsetree.function_param) -> p.pparam_desc) ps @ [ Parsetree.Pparam_newtype (Location.mknoloc "") ]
+        | _ -> []
+      in
+      let qident path = Ast_helper.Exp.ident ~loc (Location.mkloc (Option.get (Longident.unflatten path)) loc) in
+      let argv = qident [ "Sys"; "argv" ] in
+      let argc = Ast_helper.Exp.apply ~loc (qident [ "Array"; "length" ]) [ (Nolabel, argv) ] in
+      let args =
+        match params f with
+        | Pparam_val (Nolabel, None, { ppat_desc = Ppat_construct ({ txt = Lident "()"; _ }, None); _ }) :: _ -> None
+        (* `fn main (argc, argv)`, the imperative style's `main(argc, argv)` *)
+        | [ Pparam_val (Nolabel, None, { ppat_desc = Ppat_tuple ([ _; _ ], _); _ }) ] ->
+          Some [ Ast_helper.Exp.tuple ~loc [ (None, argc); (None, argv) ] ]
+        | [ Pparam_val (Nolabel, None, _) ] -> Some [ argv ]
+        | [ Pparam_val (Nolabel, None, _); Pparam_val (Nolabel, None, _) ] -> Some [ argc; argv ]
+        | _ -> main_error loc
+      in
+      match args with
+      | None -> f
+      | Some args ->
+        let unit_param =
+          { Parsetree.pparam_loc = loc;
+            pparam_desc = Pparam_val (Nolabel, None, Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None) }
+        in
+        Ast_helper.Exp.function_ ~loc [ unit_param ] None
+          (Pfunction_body (Ast_helper.Exp.apply ~loc f (List.map (fun a -> (Asttypes.Nolabel, a)) args)))
+    in
+    let user_structure =
+      List.map
+        (fun (item : Parsetree.structure_item) ->
+          match item.pstr_desc with
+          | Pstr_value (rf, vbs) ->
+            let vbs =
+              List.map
+                (fun (vb : Parsetree.value_binding) ->
+                  match vb.pvb_pat.ppat_desc, vb.pvb_expr.pexp_desc with
+                  | Ppat_var { txt = "main"; loc }, Pexp_function _ -> { vb with pvb_expr = with_command_line loc vb.pvb_expr }
+                  | Ppat_var { txt = "main"; loc }, _ -> main_error loc
+                  | _ -> vb)
+                vbs
+            in
+            { item with pstr_desc = Pstr_value (rf, vbs) }
+          | _ -> item)
+        user_structure
+    in
     Clflags.include_dirs := "+str" :: "+unix" :: !Clflags.include_dirs;
     Compmisc.init_path ();
     (* "unreachable case": only ever about [never_type_name], the empty type
@@ -3645,7 +3701,7 @@ let () =
     if verbose then Printf.printf "Generated OCaml:\n%s\n" ocaml_src;
 
     let base = Filename.remove_extension filename in
-    let exe_file = base ^ ".exe" in
+    let exe_file = match output with Some f -> f | None -> base ^ ".exe" in
     (* ocamlopt writes its .cmi/.cmx/.o next to the .ml it compiles: without
        --keep, that's a throwaway directory, removed afterwards. *)
     let build_dir = if keep then Filename.dirname filename else Filename.temp_dir "scaml" "" in
@@ -3669,5 +3725,4 @@ let () =
        Printf.eprintf "ocamlfind ocamlopt failed (exit %d)\n" code;
        exit 1)
   | _ ->
-    Printf.eprintf "Usage: %s [--tokens] [--verbose|-v] [--keep|-k] [--check-stdlib] <file.scaml>\n       %s --version\n" Sys.argv.(0) Sys.argv.(0);
-    exit 1
+    usage ()
