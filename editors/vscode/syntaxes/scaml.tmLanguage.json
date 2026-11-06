@@ -93,7 +93,7 @@
       }
     },
     "directive": {
-      "match": "(#use)\\b",
+      "match": "(#use|#time)\\b",
       "captures": {
         "1": {
           "name": "keyword.control.import.scaml"

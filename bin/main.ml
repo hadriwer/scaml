@@ -3211,6 +3211,7 @@ let read_file filename = In_channel.with_open_bin filename In_channel.input_all
    crashes dumping the tokens seen so far). Shared by the user's own file
    and every stdlib file [load_stdlib] pulls in below. *)
 let parse_scaml_string (filename : string) (contents : string) : Parsetree.structure =
+  Hashtbl.replace SCaml.Embedded.sources filename contents;
   let lexbuf = Lexing.from_string contents in
   Lexing.set_filename lexbuf filename;
   try SCaml.Parser.program SCaml.Lexer.token lexbuf
@@ -3433,7 +3434,7 @@ let () =
             vbs
         | _ -> ())
       user_structure;
-    Clflags.include_dirs := "+str" :: !Clflags.include_dirs;
+    Clflags.include_dirs := "+str" :: "+unix" :: !Clflags.include_dirs;
     Compmisc.init_path ();
     (* "unreachable case": only ever about [never_type_name], the empty type
        a call like `f None` is cloned with when nothing fixes the option's
@@ -3632,7 +3633,7 @@ let () =
     close_out oc;
 
     let cmd =
-      Printf.sprintf "ocamlfind ocamlopt -package str -linkpkg -w -56 %s -o %s"
+      Printf.sprintf "ocamlfind ocamlopt -package str,unix -linkpkg -w -56 %s -o %s"
         (Filename.quote ml_file) (Filename.quote exe_file)
     in
     let status = Sys.command cmd in

@@ -76,6 +76,28 @@ let scaml_range_forall p low high inclusive st =
   let rec go k = k >= n || (p (low + k * st) && go (k + 1)) in
   go 0
 
+(* `#time let r = e;`: [f ()], printing how long it took (wall clock) on
+   stderr, after flushing what the program printed so far. The heap is
+   compacted first, outside of the time: what came before is collected,
+   and the heap shrunk back, so that two `#time` in a row compare fairly
+   (a heap already grown by the first made the second up to 15% faster;
+   a full major collection alone doesn't shrink it). A debugging tool:
+   that compaction has its cost. *)
+let scaml_time what f =
+  Gc.compact ();
+  let t0 = Unix.gettimeofday () in
+  let v = f () in
+  let t = Unix.gettimeofday () -. t0 in
+  let shown =
+    if t >= 1. then Printf.sprintf "%.3f s" t
+    else if t >= 1e-3 then Printf.sprintf "%.3f ms" (t *. 1e3)
+    else if t >= 1e-6 then Printf.sprintf "%.3f µs" (t *. 1e6)
+    else Printf.sprintf "%.0f ns" (t *. 1e9)
+  in
+  flush stdout;
+  Printf.eprintf "time for computing %s : %s\n%!" what shown;
+  v
+
 (* Comparable *)
 let scaml_compare = compare
 let scaml_lt = (<)

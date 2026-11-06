@@ -493,6 +493,38 @@ adds `a * 2 + 1`. Defined in the standard library like any operator (`op
 += r v { r = *r + v }`), they're not to be confused with an indexing
 operator, `t[i] += v` (see [Indexing operators](#indexing-operators)).
 
+## Timing
+
+`#time` before a `let` or an expression prints how long computing it took
+(wall clock), on the error output, the program running as usual:
+
+```rust
+#time let table = fold_left (+) 0 (0..10000000);
+
+fn main () {
+    #time let r = fold_left (^acc e -> e :: acc) [] (0..100000);
+    #time println (len r);
+    println table;
+}
+```
+
+```
+time for computing table : 25.852 ms
+time for computing r : 3.863 ms
+100000
+time for computing println (len r) : 3.815 µs
+49999995000000
+```
+
+The time is shown in s, ms, µs or ns, and what was computed as written in
+the source (cut after 60 characters).
+
+Before starting the clock, `#time` compacts the memory (`Gc.compact ()`):
+what came before is collected and doesn't weigh on what's timed, so two
+`#time` in a row compare fairly. That compaction isn't counted, but it
+takes time: `#time` is a tool to debug and compare, not to leave in a
+program.
+
 Between braces, `{ x = 1; y = 2 }` is a record when `x` and `y` are fields
 of a record type declared above, and sets the references `x` and `y`
 otherwise.

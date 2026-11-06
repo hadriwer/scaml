@@ -20,6 +20,12 @@ syntax and the standard library may still change between minor versions.
 - `r += v`, `-=`, `*=`, `/=`, `%=`, `**=`, `@=` on a reference: `r = *r +
   v`, with any type's `+` (`s += "!"`, `l @= [x]`). Operators of the core
   library, with the lowest priority of all (`r += a + b`).
+- `#time` before a `let` (in a function or at the top level) or an
+  expression statement prints how long computing it took, on stderr:
+  `#time let r = fold_left .. (0..100000);` prints `time for computing r :
+  3.863 ms`. Wall clock, through `unix`, now linked into the executables.
+  The memory is compacted before the clock starts (not counted), so that
+  successive `#time` compare fairly.
 
 ### Standard library
 
@@ -82,7 +88,7 @@ syntax and the standard library may still change between minor versions.
 ### Editors
 
 - VS Code and Neovim highlight `ref` as a keyword (`ref 0`), and as a type
-  after `of` (`impl showable of ref`).
+  after `of` (`impl showable of ref`), and `#time` like `#use`.
 
 ### Fixed
 

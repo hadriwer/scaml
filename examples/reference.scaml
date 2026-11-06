@@ -1,12 +1,12 @@
 
 fn add10 r {
-  for (0..10) (^i -> r += i);
+  for (0..10000000) (^i -> r += i);
 }
 
 fn main () {
   let r = ref 0;
   incr r;
-  add10 r;
+  #time add10 r;
   println (*r);
 
   let l = ref [];
@@ -14,6 +14,8 @@ fn main () {
   println (*l);
 
   // fold_right cost nothing with replacement of ocaml loop
-  println (fold_left (^acc e -> e::acc) [] (0..10000));
-  println (fold_right (^i acc -> i :: acc) (0..10000) []);
+  let b = 100;
+  #time let _example_fold_left = fold_left (^acc e -> e::acc) [] (0..b);
+  #time let _example_fold_right = fold_right (^e acc -> e::acc) (0..b) [];
+  ()
 }

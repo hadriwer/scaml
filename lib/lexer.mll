@@ -66,6 +66,7 @@ rule raw_token = parse
   | "|" { BAR } (* alone only: `||`, `|>` stay operators (longest match) *)
   | "type" { TYPE }
   | "#use" { USE }
+  | "#time" { TIME }
   | "fn"  { FN }
   | "trait" { TRAIT }
   | "impl"  { IMPL }

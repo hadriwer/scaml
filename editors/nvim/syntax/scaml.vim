@@ -72,7 +72,7 @@ syn match  scamlBadEscape  contained "\\[^nt\"\\]"
 syn region scamlString     start=+"+ skip=+\\.+ end=+"+ contains=scamlEscape,scamlBadEscape
 
 " Directive and comments (highest priority: defined last)
-syn match scamlDirective   "#use\>"
+syn match scamlDirective   "#\%(use\|time\)\>"
 syn keyword scamlTodo      contained TODO FIXME XXX NOTE
 syn match scamlComment     "//.*$" contains=scamlTodo,@Spell
 

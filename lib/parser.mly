@@ -663,6 +663,20 @@ let brace_expr loc (b : expression) =
   | Some fs -> Ast_helper.Exp.record ~loc fs None
   | None -> b
 
+(* `#time let r = e;`, `#time e;`: [e], timed, the time printed with
+   [what] (`r`) by the stdlib's `scaml_time` (stdlib/primitive.ml). *)
+let mk_timed loc what (e : expression) =
+  let unit_param = { pparam_loc = loc; pparam_desc = Pparam_val (Nolabel, None, Ast_helper.Pat.construct ~loc (Location.mkloc (Longident.Lident "()") loc) None) } in
+  Ast_helper.Exp.apply ~loc (mkident loc "scaml_time")
+    [ (Nolabel, Ast_helper.Exp.constant ~loc (Ast_helper.Const.string what));
+      (Nolabel, Ast_helper.Exp.function_ ~loc [ unit_param ] None (Pfunction_body e)) ]
+
+(* What `#time` says it computed: its source, as written between [s] and
+   [e] (on one line, cut after 60 chars). *)
+let timed_name s e =
+  let t = Option.value (Embedded.source_text s e) ~default:"it" in
+  if String.length t > 60 then String.sub t 0 57 ^ "..." else t
+
 (* `p1 | p2 | p3`, left-associative as OCaml's. *)
 let mk_or_pattern = function
   | [] -> assert false
@@ -700,7 +714,7 @@ let load_used_file loc path : Parsetree.structure =
 %token <string> OP_ASSIGN OP_OR OP_AND OP_CMP OP_AT OP_CONS OP_ADD OP_MUL OP_POW
 %token <string> STRING
 %token LPAREN RPAREN LBRACE RBRACE COMMA SEMICOLON EQ LBRACK RBRACK
-%token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TRAIT IMPL TYPE OF
+%token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TIME TRAIT IMPL TYPE OF
 %token QUESTION
 %token <string> INDEX_OP
 %token INDEX_QUERY
@@ -953,6 +967,11 @@ item:
               c (String.lowercase_ascii c))))
        | _ -> ());
       [ Ast_helper.Str.value ~loc Nonrecursive [ Ast_helper.Vb.mk ~loc p (desugar_range_let loc p e) ] ] }
+  (* `#time let r = e;`: prints how long computing `r` took. *)
+  | TIME; LET; p = let_pattern; EQ; e = expr; SEMICOLON
+    { let loc = mkloc $startpos $endpos in
+      [ Ast_helper.Str.value ~loc Nonrecursive
+          [ Ast_helper.Vb.mk ~loc p (mk_timed loc (timed_name $startpos(p) $endpos(p)) (desugar_range_let loc p e)) ] ] }
   | FN; name = IDENT; params = fn_def_params;
     LBRACE; body = block; RBRACE
     { [ mkfn (mkloc $startpos $endpos) name params body ] }
@@ -1282,6 +1301,18 @@ block:
       let loc = mkloc $startpos $endpos in
       Ast_helper.Exp.let_ ~loc Nonrecursive [ Ast_helper.Vb.mk p (desugar_range_let loc p e1) ] e2
     }
+  (* `#time let r = e; ..`, `#time e; ..`: prints how long `e` took. *)
+  | TIME; LET; p = let_pattern; EQ; e1 = expr; SEMICOLON; e2 = block
+    { 
+      let loc = mkloc $startpos $endpos in
+      let e1 = mk_timed (mkloc $startpos(e1) $endpos(e1)) (timed_name $startpos(p) $endpos(p)) (desugar_range_let loc p e1) in
+      Ast_helper.Exp.let_ ~loc Nonrecursive [ Ast_helper.Vb.mk p e1 ] e2
+    }
+  | TIME; e1 = expr; SEMICOLON; b = block
+    { let loc = mkloc $startpos $endpos in
+      Ast_helper.Exp.sequence ~loc (mk_timed (mkloc $startpos(e1) $endpos(e1)) (timed_name $startpos(e1) $endpos(e1)) e1) b }
+  | TIME; e = expr; SEMICOLON | TIME; e = expr
+    { mk_timed (mkloc $startpos(e) $endpos(e)) (timed_name $startpos(e) $endpos(e)) e }
   | e1 = expr; SEMICOLON; b = block
     { 
       let loc = mkloc $startpos $endpos in

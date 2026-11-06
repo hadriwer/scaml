@@ -27,6 +27,7 @@ let string_of_token : Parser.token -> string = function
   | Parser.FN -> "FN"
   | Parser.OP -> "OP"
   | Parser.USE -> "USE"
+  | Parser.TIME -> "TIME"
   | Parser.TRAIT -> "TRAIT"
   | Parser.IMPL -> "IMPL"
   | Parser.TYPE -> "TYPE"
