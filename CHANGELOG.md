@@ -84,6 +84,11 @@ syntax and the standard library may still change between minor versions.
   string), their bounds computed once: a sum over 10⁸ elements takes
   0.18 s with `fold_left` (2.1 s before), 0.32 s with `for` (2.6 s).
   `fold_right` on a range no longer recurses.
+- A function of several parameters is compiled as one OCaml function of
+  that many parameters (`fun a b -> ..`), not nested ones (`fun a -> fun b
+  -> ..`): since OCaml 5.2, those take one argument at a time, and every
+  call allocated a closure. `r += i` in a loop allocates nothing anymore,
+  and the sum with `for` over 10⁸ elements takes 0.16 s (0.32 s).
 
 ### Editors
 

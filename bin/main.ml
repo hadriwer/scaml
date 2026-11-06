@@ -3092,6 +3092,27 @@ let drop_unused_generics env methods (method_names : string list) (structure : P
   let mapper = { Ast_mapper.default_mapper with expr } in
   mapper.structure mapper structure
 
+(* `fun a -> fun b -> e`, as every function of several parameters is built
+   (one `fun` per parameter, see lib/parser.mly), into `fun a b -> e`. Since
+   OCaml 5.2 a function's arity is the number of parameters of its own
+   `fun`: the first form takes one argument and returns a closure, so that
+   every call `f a b` allocates one; the second takes both. Same meaning. *)
+let fuse_functions (structure : Parsetree.structure) =
+  let rec fuse (e : Parsetree.expression) =
+    match e.pexp_desc with
+    | Pexp_function (params, None, Pfunction_body ({ pexp_desc = Pexp_function (inner, c, body); pexp_attributes = []; _ }))
+      when params <> [] && inner <> [] ->
+      fuse { e with pexp_desc = Pexp_function (params @ inner, c, body) }
+    (* `fun x -> function | ..`: `function` takes the next argument *)
+    | Pexp_function (params, None, Pfunction_body ({ pexp_desc = Pexp_function ([], c, (Pfunction_cases _ as cases)); pexp_attributes = []; _ }))
+      when params <> [] ->
+      { e with pexp_desc = Pexp_function (params, c, cases) }
+    | _ -> e
+  in
+  let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) = fuse (Ast_mapper.default_mapper.expr m e) in
+  let mapper = { Ast_mapper.default_mapper with expr } in
+  mapper.structure mapper structure
+
 (* The comparison operators of the stdlib (`op < a b { scaml_lt a b }`)
    are OCaml's polymorphic ones, an external call for any type: OCaml only
    compares natively where it sees the type. Once the whole program has
@@ -3616,6 +3637,7 @@ let () =
       | Some typed -> timed "specialize comparisons" (fun () -> specialize_comparisons typed full_structure)
       | None -> full_structure
     in
+    let full_structure = timed "fuse functions" (fun () -> fuse_functions full_structure) in
     let full_structure = timed "dead code" (fun () -> eliminate_dead_code full_structure) in
 
     let ocaml_src = timed "print OCaml" (fun () -> Format.asprintf "%a" Pprintast.structure full_structure) in

@@ -84,18 +84,18 @@ let scaml_range_forall p low high inclusive st =
    a full major collection alone doesn't shrink it). A debugging tool:
    that compaction has its cost. *)
 let scaml_time what f =
-  Gc.compact ();
+  Stdlib.Gc.compact ();
   let t0 = Unix.gettimeofday () in
   let v = f () in
   let t = Unix.gettimeofday () -. t0 in
   let shown =
-    if t >= 1. then Printf.sprintf "%.3f s" t
-    else if t >= 1e-3 then Printf.sprintf "%.3f ms" (t *. 1e3)
-    else if t >= 1e-6 then Printf.sprintf "%.3f µs" (t *. 1e6)
-    else Printf.sprintf "%.0f ns" (t *. 1e9)
+    if t >= 1. then Stdlib.Printf.sprintf "%.3f s" t
+    else if t >= 1e-3 then Stdlib.Printf.sprintf "%.3f ms" (t *. 1e3)
+    else if t >= 1e-6 then Stdlib.Printf.sprintf "%.3f µs" (t *. 1e6)
+    else Stdlib.Printf.sprintf "%.0f ns" (t *. 1e9)
   in
   flush stdout;
-  Printf.eprintf "time for computing %s : %s\n%!" what shown;
+  Stdlib.Printf.eprintf "time for computing %s : %s\n%!" what shown;
   v
 
 (* Comparable *)
