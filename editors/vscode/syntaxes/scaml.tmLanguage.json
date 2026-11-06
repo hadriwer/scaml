@@ -297,6 +297,11 @@
         {
           "name": "keyword.other.of.scaml",
           "match": "\\bof\\b"
+        },
+        {
+          "comment": "`ref 0`; after `of`, the type (see #builtin-type)",
+          "name": "keyword.other.ref.scaml",
+          "match": "\\bref\\b(?!')"
         }
       ]
     },
@@ -322,7 +327,7 @@
     },
     "builtin-type": {
       "name": "support.type.primitive.scaml",
-      "match": "\\b(int|float|string|char|bool|unit|list|array|option|range)\\b(?!')"
+      "match": "\\b(int|float|string|char|bool|unit|list|array|option|range|ref)\\b(?!')"
     },
     "module": {
       "comment": "Array.make, Fun.id, ...",

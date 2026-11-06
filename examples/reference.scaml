@@ -1,0 +1,19 @@
+
+fn add10 r {
+  for (0..10) (^i -> r += i);
+}
+
+fn main () {
+  let r = ref 0;
+  incr r;
+  add10 r;
+  println (*r);
+
+  let l = ref [];
+  l = 1 :: *l;
+  println (*l);
+
+  // fold_right cost nothing with replacement of ocaml loop
+  println (fold_left (^acc e -> e::acc) [] (0..10000));
+  println (fold_right (^i acc -> i :: acc) (0..10000) []);
+}

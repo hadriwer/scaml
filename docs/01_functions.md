@@ -457,6 +457,46 @@ A few rules:
 - It is defined before what uses it, like a function.
 - It is computed once, when the program starts, before `main`.
 
+## References
+
+A variable can't change, but a reference can: `ref e` makes one, holding
+`e`. `*r` is the value it holds, and `r = e` changes it.
+
+```rust
+fn counter () {
+    let n = ref 0;
+    ^() -> { n = *n + 1; *n }
+}
+
+fn main () {
+    let total = ref 0;
+    iter (^i -> total += i) (1..=4);    // total = *total + i
+    println (*total);                   // 10
+
+    let next = counter ();
+    next ();
+    println (next ());                  // 2
+}
+```
+
+`*` is the value of a reference where an expression starts, or after an
+operator: `*r + 1`, `2 * *r`, `x = *r`. Anywhere else it's a product, as
+for `-`: an argument takes parentheses, `println (*r)` (`println *r` would
+multiply `println` by `r`). It applies to what's right after it: `*t[i]`
+is the value of the reference `t[i]`, `*node.next` that of the field
+`next`, which `node.next = e` changes.
+
+`r += v` is `r = *r + v`, with any type's `+` (`s += "!"` on a string
+reference), and so are `-=`, `*=`, `/=`, `%=`, `**=` and `@=` (`l @= [x]`
+on a list reference). They come last among the operators: `r += a * 2 + 1`
+adds `a * 2 + 1`. Defined in the standard library like any operator (`op
++= r v { r = *r + v }`), they're not to be confused with an indexing
+operator, `t[i] += v` (see [Indexing operators](#indexing-operators)).
+
+Between braces, `{ x = 1; y = 2 }` is a record when `x` and `y` are fields
+of a record type declared above, and sets the references `x` and `y`
+otherwise.
+
 ---
 
 [← Introduction](00_introduction.md) · [Index](README.md) · [Next: Loops →](02_loops.md)

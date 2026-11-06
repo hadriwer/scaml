@@ -12,7 +12,10 @@ syn keyword scamlConditional if then else match function
 syn keyword scamlException   try with exception
 syn keyword scamlStorage     fn op let type trait impl
 syn keyword scamlBoolean     true false
-syn keyword scamlBuiltinType int float string char bool unit list array option range
+syn keyword scamlBuiltinType int float string char bool unit list array option range ref
+" `ref 0`: defined after, so it wins outside a type (after `of`, `ref` is
+" the type, see scamlTypeAnnot)
+syn keyword scamlRef         ref
 
 " Identifiers (lowest priority: defined first)
 syn match scamlConstructor "\<[A-Z][A-Za-z0-9_']*"
@@ -79,6 +82,7 @@ hi def link scamlStorage     Keyword
 hi def link scamlOf          Keyword
 hi def link scamlBoolean     Boolean
 hi def link scamlBuiltinType Type
+hi def link scamlRef         Keyword
 hi def link scamlConstructor Constant
 hi def link scamlModule      Structure
 hi def link scamlField       Identifier

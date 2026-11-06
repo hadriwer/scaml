@@ -136,12 +136,12 @@ let known_types = [ "unit"; "int"; "float"; "string"; "bytes"; "bool"; "char" ]
 let user_type_arity : (string, int) Hashtbl.t = Hashtbl.create 16
 
 let is_known_type name =
-  List.mem name known_types || List.mem name [ "array"; "list"; "option" ]
+  List.mem name known_types || List.mem name [ "array"; "list"; "option"; "ref" ]
   || Hashtbl.mem user_type_arity name || Type_name.is_qualified name
 
 let type_arity name =
   match name with
-  | "array" | "list" | "option" -> 1
+  | "array" | "list" | "option" | "ref" -> 1
   | _ when Type_name.is_qualified name -> Option.value (Type_name.arity name) ~default:0
   | _ -> Option.value (Hashtbl.find_opt user_type_arity name) ~default:0
 
@@ -637,6 +637,32 @@ let mkoverloadimpl loc trait_name (tys : string list) (methods : structure_item 
    `#use "stdlib/..."` resolves to the copy built into the compiler. *)
 let used_scaml : (string, unit) Hashtbl.t = Hashtbl.create 16
 
+(* The fields of the records declared so far: `{ x = 1 }` builds a record
+   if `x` is one, sets the ref `x` otherwise (see [brace_expr]). *)
+let record_fields : (string, unit) Hashtbl.t = Hashtbl.create 16
+
+(* Marks `r = v` (OCaml's `r := v`), for [brace_expr]. *)
+let ref_assign_attr = Ast_helper.Attr.mk (Location.mknoloc "scaml.assign") (PStr [])
+
+(* `{ .. }`: a record if every statement of the block is `x = e` on a
+   record field, else the block itself. *)
+let brace_expr loc (b : expression) =
+  let field (e : expression) =
+    match e.pexp_desc, e.pexp_attributes with
+    | Pexp_apply (_, [ (_, { pexp_desc = Pexp_ident ({ txt = Longident.Lident x; _ } as lid); _ }); (_, v) ]), [ a ]
+      when a.attr_name.txt = "scaml.assign" && Hashtbl.mem record_fields x ->
+      Some (lid, v)
+    | _ -> None
+  in
+  let rec fields (e : expression) =
+    match e.pexp_desc with
+    | Pexp_sequence (a, rest) -> (match field a, fields rest with Some f, Some fs -> Some (f :: fs) | _ -> None)
+    | _ -> Option.map (fun f -> [ f ]) (field e)
+  in
+  match fields b with
+  | Some fs -> Ast_helper.Exp.record ~loc fs None
+  | None -> b
+
 (* `p1 | p2 | p3`, left-associative as OCaml's. *)
 let mk_or_pattern = function
   | [] -> assert false
@@ -671,7 +697,7 @@ let load_used_file loc path : Parsetree.structure =
 %token <int> INT
 %token <char> CHAR
 %token <string> IDENT FLOAT QIDENT
-%token <string> OP_OR OP_AND OP_CMP OP_AT OP_CONS OP_ADD OP_MUL OP_POW
+%token <string> OP_ASSIGN OP_OR OP_AND OP_CMP OP_AT OP_CONS OP_ADD OP_MUL OP_POW
 %token <string> STRING
 %token LPAREN RPAREN LBRACE RBRACE COMMA SEMICOLON EQ LBRACK RBRACK
 %token LET IF THEN ELSE FUN ARROW TRUE FALSE FN OP USE TRAIT IMPL TYPE OF
@@ -688,6 +714,7 @@ let load_used_file loc path : Parsetree.structure =
    parentheses to end it. *)
 %nonassoc below_BAR
 %left BAR
+%right OP_ASSIGN
 %right OP_OR
 %right OP_AND
 %left OP_CMP
@@ -718,6 +745,7 @@ program:
 (* Inlined, so each use expands to one production per token and keeps that
    token's precedence (see the declarations above). *)
 %inline binop:
+  | c = OP_ASSIGN { c }
   | c = OP_OR { c }
   | c = OP_AND { c }
   | c = OP_CMP { c }
@@ -893,6 +921,7 @@ item:
                items)
         in
         let record items =
+          List.iter (fun ((n : string Location.loc), _) -> Hashtbl.replace record_fields n.txt ()) items;
           Ptype_record
             (List.map
                (fun ((n : string Location.loc), args) ->
@@ -1266,14 +1295,24 @@ block:
    `[]+=`. An expression: its value is the operator's (`()` for `[]=`), and
    the value `v` extends as far as it can (`t[i] += 1 + 2`). *)
 assignment:
+  (* `r = v`: sets the ref `r` (OCaml's `r := v`). *)
+  | x = IDENT; EQ; v = expr
+    { let loc = mkloc $startpos $endpos in
+      Ast_helper.Exp.apply ~loc ~attrs:[ ref_assign_attr ] (mkident (mkloc $startpos($2) $endpos($2)) ":=")
+        [ (Nolabel, mkident (mkloc $startpos(x) $endpos(x)) x); (Nolabel, v) ] }
+  (* `n.next = v`: sets the ref in the field `next`. *)
+  | e = indexable; DOT; f = IDENT; EQ; v = expr
+    { let loc = mkloc $startpos $endpos in
+      let r = Ast_helper.Exp.field ~loc:(mkloc $startpos(e) $endpos(f)) e
+          (Location.mkloc (Longident.Lident f) (mkloc $startpos(f) $endpos(f))) in
+      Ast_helper.Exp.apply ~loc (mkident (mkloc $startpos($4) $endpos($4)) ":=") [ (Nolabel, r); (Nolabel, v) ] }
   | a = indexable; INDEX_LBRACK; index = expr; RBRACK; EQ; v = expr
     { mkassign (mkloc $startpos $endpos) a index $startpos(index) v }
   | a = indexable; INDEX_LBRACK; index = expr; RBRACK; c = INDEX_OP; v = expr
     { mkassign ~op:("[]" ^ c) (mkloc $startpos $endpos) a index $startpos(index) v }
 
+(* `{ .. }` is an expression too, see [atom]. *)
 body:
-  | LBRACE; b = block; RBRACE
-      { b }
   | e = expr
       { e }
 
@@ -1425,13 +1464,24 @@ expr_bin:
       { let loc = mkloc $startpos $endpos in
         if c <> "-" then
           raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
-            (Printf.sprintf "`%s` can't be used as a prefix operator (only `-`)" c)));
+            (Printf.sprintf "`%s` can't be used as a prefix operator (only `-` and `*`)" c)));
         match e.pexp_desc with
         | Pexp_constant { pconst_desc = Pconst_integer (n, None); _ } when n.[0] <> '-' ->
           Ast_helper.Exp.constant ~loc (Ast_helper.Const.integer ("-" ^ n))
         | Pexp_constant { pconst_desc = Pconst_float (f, None); _ } when f.[0] <> '-' ->
           Ast_helper.Exp.constant ~loc (Ast_helper.Const.float ("-" ^ f))
         | _ -> Ast_helper.Exp.apply ~loc (mkident (mkloc $startpos(c) $endpos(c)) "neg") [ (Nolabel, e) ] }
+  (* `*r`, the value of the ref `r` (OCaml's `!r`). Same rule as `-`: only
+     where an expression starts or after an operator, so `1*r` and `a * r`
+     stay products, and `f *r` too: as an argument, it takes parentheses.
+     It applies to what's right after it: `*r.next` is the value of the ref
+     `r.next`, `*t[i]` that of `t[i]`. *)
+  | c = OP_MUL; e = indexable
+      { let loc = mkloc $startpos $endpos in
+        if c <> "*" then
+          raise (Location.Error (Location.error ~loc:(mkloc $startpos(c) $endpos(c))
+            (Printf.sprintf "`%s` can't be used as a prefix operator (only `-` and `*`)" c)));
+        Ast_helper.Exp.apply ~loc (mkident (mkloc $startpos(c) $endpos(c)) "!") [ (Nolabel, e) ] }
   | e = app %prec below_arms { mkapp e }
 
 tuple:
@@ -1499,10 +1549,12 @@ atom:
       }
   | LPAREN; e = expr; RPAREN 
       { e }
-  | LBRACE; fs = separated_nonempty_list(SEMICOLON, record_field); RBRACE
-      { 
-        Ast_helper.Exp.record ~loc:(mkloc $startpos $endpos) fs None
-      }
+  (* A block, `{ let x = 1; f x }`, or a record, `{ name = "a"; age = 3 }`:
+     the same until the end, `{ r = 1 }` setting the ref `r` as well. A
+     record when every statement is `x = e` with `x` a field of a record
+     declared above. *)
+  | LBRACE; b = block; RBRACE
+      { brace_expr (mkloc $startpos $endpos) b }
 
   (* `[| 1; 2; 3 |]`, or `[||]` for an empty array. *)
   | LBRACKBAR; fs = separated_list(SEMICOLON, expr); BARRBRACK
@@ -1516,8 +1568,3 @@ atom:
           (fun e acc -> ctor "::" (Some (Ast_helper.Exp.tuple ~loc [ (None, e); (None, acc) ])))
           fs (ctor "[]" None) }
 
-record_field:
-  | f = IDENT; EQ; e = expr
-      {
-        (Location.mkloc (Longident.Lident f) (mkloc $startpos(f) $endpos(f)), e)
-      }

@@ -448,6 +448,7 @@ let known_type_name (path : Path.t) =
   else if Path.same path Predef.path_array then Some "array"
   else if Path.same path Predef.path_list then Some "list"
   else if Path.same path Predef.path_option then Some "option"
+  else if Path.name path = "Stdlib.ref" then Some "ref"
   else None
 
 (* Just the outermost constructor's name (`array` for `'a array`, whose
@@ -1750,8 +1751,16 @@ let harvest_dispatch ?(cache = false)
         part for some types (e.g. `indexable`'s `[]` but not `[]=` for a
         read-only `string`). *)
      let shown = match SCaml.Op_names.prettify name with p when p = name -> "`" ^ name ^ "`" | p -> p in
+     (* `f *r`: `*` after an operand is a product, not the value of `r` *)
+     let sub =
+       match tys with
+       | [ f; r ] when shown = "`*`" && String.contains f '>' && (r = "ref" || String.ends_with ~suffix:" ref" r) ->
+         [ Location.msg "Hint: to pass the value of a ref as an argument, write `f (*r)`" ]
+       | _ -> []
+     in
      let report =
-       Location.error ~loc (Printf.sprintf "No impl of %s (trait `%s`) for %s" shown trait_name (String.concat ", " tys))
+       { (Location.error ~loc (Printf.sprintf "No impl of %s (trait `%s`) for %s" shown trait_name (String.concat ", " tys)))
+         with sub }
      in
      (* The last-resort pass may still get past it (see the pipeline). *)
      if !default_free_type_vars then raise (Overload_miss report);
@@ -3083,6 +3092,95 @@ let drop_unused_generics env methods (method_names : string list) (structure : P
   let mapper = { Ast_mapper.default_mapper with expr } in
   mapper.structure mapper structure
 
+(* The comparison operators of the stdlib (`op < a b { scaml_lt a b }`)
+   are OCaml's polymorphic ones, an external call for any type: OCaml only
+   compares natively where it sees the type. Once the whole program has
+   type-checked, each comparison on an `int`, `float`, `char`, `bool` or
+   `string` becomes OCaml's, annotated (`op___9___ i n` -> `(i : int) < n`),
+   and so does one passed as a value at such a type (`Range (lo, hi, (<))`
+   -> `fun (a : int) b -> a < b`). Same behavior, only faster. *)
+let specialize_comparisons (typed : Typedtree.structure) (structure : Parsetree.structure) =
+  (* `let op___9___ a b = scaml_lt a b` -> "op___9___", "<" *)
+  let ocaml_op = [ ("scaml_lt", "<"); ("scaml_leq", "<="); ("scaml_gt", ">"); ("scaml_geq", ">="); ("scaml_eq", "="); ("scaml_neq", "<>") ] in
+  let cmp_fns = Hashtbl.create 8 in
+  List.iter
+    (fun (item : Parsetree.structure_item) ->
+      match item.pstr_desc with
+      | Pstr_value (_, [ { pvb_pat = { ppat_desc = Ppat_var { txt = name; _ }; _ }; pvb_expr; _ } ]) ->
+        let rec body (e : Parsetree.expression) =
+          match e.pexp_desc with Pexp_function (_, _, Pfunction_body b) -> body b | _ -> e
+        in
+        (* `scaml_lt a b`, or `(scaml_lt a) b` *)
+        (match (body pvb_expr).pexp_desc with
+         | Pexp_apply ({ pexp_desc = Pexp_ident { txt = Lident prim; _ }; _ }, [ _; _ ])
+         | Pexp_apply ({ pexp_desc = Pexp_apply ({ pexp_desc = Pexp_ident { txt = Lident prim; _ }; _ }, [ _ ]); _ }, [ _ ])
+           when List.mem_assoc prim ocaml_op ->
+           Hashtbl.replace cmp_fns name (List.assoc prim ocaml_op)
+         | _ -> ())
+      | _ -> ())
+    structure;
+  if Hashtbl.length cmp_fns = 0 then structure
+  else begin
+    let base_type env ty =
+      match Types.get_desc (Ctype.expand_head env (strip_tpoly ty)) with
+      | Tconstr (path, [], _) ->
+        List.find_map
+          (fun (p, n) -> if Path.same path p then Some n else None)
+          [ (Predef.path_int, "int"); (Predef.path_float, "float"); (Predef.path_char, "char");
+            (Predef.path_bool, "bool"); (Predef.path_string, "string") ]
+      | _ -> None
+    in
+    (* by location: the applications to rewrite, and the bare uses *)
+    let applied = Hashtbl.create 64 and bare = Hashtbl.create 16 and heads = Hashtbl.create 64 in
+    let cmp_name (e : Typedtree.expression) =
+      match e.exp_desc with
+      | Texp_ident (Pident id, _, _) -> Hashtbl.find_opt cmp_fns (Ident.name id)
+      | _ -> None
+    in
+    let expr (it : Tast_iterator.iterator) (e : Typedtree.expression) =
+      (match e.exp_desc with
+       | Texp_apply (head, [ (Nolabel, Arg a); (Nolabel, Arg _) ]) ->
+         (match cmp_name head, base_type a.exp_env a.exp_type with
+          | Some op, Some ty ->
+            Hashtbl.replace heads (loc_key head.exp_loc) ();
+            Hashtbl.replace applied (loc_key e.exp_loc) (op, ty)
+          | _ -> ())
+       | Texp_ident _ when not (Hashtbl.mem heads (loc_key e.exp_loc)) ->
+         (match cmp_name e, Types.get_desc (Ctype.expand_head e.exp_env e.exp_type) with
+          | Some op, Tarrow (_, t, _, _) ->
+            (match base_type e.exp_env t with Some ty -> Hashtbl.replace bare (loc_key e.exp_loc) (op, ty) | None -> ())
+          | _ -> ())
+       | _ -> ());
+      Tast_iterator.default_iterator.expr it e
+    in
+    let it = { Tast_iterator.default_iterator with expr } in
+    it.structure it typed;
+    let op_ident loc op = Ast_helper.Exp.ident ~loc (Location.mkloc (Option.get (Longident.unflatten [ "Stdlib"; op ])) loc) in
+    let ty_of loc ty = Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident ty) loc) [] in
+    let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) =
+      match e.pexp_desc with
+      | Pexp_apply (_, [ (Nolabel, a); (Nolabel, b) ]) when Hashtbl.mem applied (loc_key e.pexp_loc) ->
+        let op, ty = Hashtbl.find applied (loc_key e.pexp_loc) in
+        let loc = e.pexp_loc in
+        { e with
+          pexp_desc =
+            Pexp_apply (op_ident loc op, [ (Nolabel, Ast_helper.Exp.constraint_ ~loc (m.expr m a) (ty_of loc ty)); (Nolabel, m.expr m b) ]) }
+      | Pexp_ident _ when Hashtbl.mem bare (loc_key e.pexp_loc) ->
+        let op, ty = Hashtbl.find bare (loc_key e.pexp_loc) in
+        let loc = e.pexp_loc in
+        let var n = Ast_helper.Exp.ident ~loc (Location.mkloc (Longident.Lident n) loc) in
+        let param p = { Parsetree.pparam_loc = loc; pparam_desc = Pparam_val (Nolabel, None, p) } in
+        Ast_helper.Exp.function_ ~loc
+          [ param (Ast_helper.Pat.constraint_ ~loc (Ast_helper.Pat.var ~loc (Location.mkloc "scaml_a" loc)) (ty_of loc ty));
+            param (Ast_helper.Pat.var ~loc (Location.mkloc "scaml_b" loc)) ]
+          None
+          (Pfunction_body (Ast_helper.Exp.apply ~loc (op_ident loc op) [ (Nolabel, var "scaml_a"); (Nolabel, var "scaml_b") ]))
+      | _ -> Ast_mapper.default_mapper.expr m e
+    in
+    let mapper = { Ast_mapper.default_mapper with expr } in
+    mapper.structure mapper structure
+  end
+
 (* A `fn` without parameters (marked by lib/parser.mly) must be a function,
    η-reduced (`fn triple { mul 3 }`): one whose body is a plain value (`fn
    answer { 6 * 7 }`) is either missing its `()` or a constant (#11). A
@@ -3512,6 +3610,11 @@ let () =
        own file always in full, the stdlib only in what [prune_for_probe]
        kept (all of it with --check-stdlib). Pruning here only ever drops siblings nothing kept
        depends on, so it can't change whether what remains still type-checks. *)
+    let full_structure =
+      match !typed_final with
+      | Some typed -> timed "specialize comparisons" (fun () -> specialize_comparisons typed full_structure)
+      | None -> full_structure
+    in
     let full_structure = timed "dead code" (fun () -> eliminate_dead_code full_structure) in
 
     let ocaml_src = timed "print OCaml" (fun () -> Format.asprintf "%a" Pprintast.structure full_structure) in

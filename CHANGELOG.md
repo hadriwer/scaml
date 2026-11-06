@@ -5,6 +5,22 @@ syntax and the standard library may still change between minor versions.
 
 ## Unreleased
 
+### Language
+
+- References: `let r = ref 0;`, `r = 1` changes it, `*r` is its value
+  (OCaml's `r := 1` and `!r`). `*` is the value where an expression starts
+  or after an operator (`*r + 1`, `2 * *r`), a product anywhere else, as
+  for `-`: an argument takes parentheses, `println (*r)`. Also `*t[i]`,
+  `*n.next` and `n.next = e` on a field holding a reference. Between
+  braces, `{ x = 1 }` is a record when `x` is a field of a declared record,
+  else it sets the reference `x`. A reference prints as `ref 3` (`print`,
+  `println`, `to_string`), and converts as what it holds (`to_int`,
+  `to_float`, `to_char`). Impls can be written for `ref` like for
+  `option`.
+- `r += v`, `-=`, `*=`, `/=`, `%=`, `**=`, `@=` on a reference: `r = *r +
+  v`, with any type's `+` (`s += "!"`, `l @= [x]`). Operators of the core
+  library, with the lowest priority of all (`r += a + b`).
+
 ### Standard library
 
 - `stdlib/qs.scaml` (`#use "stdlib/qs.scaml"`): queues (`Queue.t`) and
@@ -48,6 +64,25 @@ syntax and the standard library may still change between minor versions.
   can be used.
 - `^` can be part of an operator (`^!`), still starting a lambda on its own
   (`^x -> ..`).
+
+### Compiler
+
+- Comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`) on `int`, `float`,
+  `char`, `bool` and `string` compile to OCaml's native ones instead of
+  its polymorphic comparison, an external call: up to twice as fast on
+  code that compares a lot (a sum over a range: 4.3 s → 2.6 s for 10⁸
+  elements). Same results; other types (tuples, lists...) are compared as
+  before.
+- Ranges are walked by OCaml `for` loops on ints (`iter`, `iteri`,
+  `fold_left`, `fold_right`, `forall`, `exists`, slicing an array or a
+  string), their bounds computed once: a sum over 10⁸ elements takes
+  0.18 s with `fold_left` (2.1 s before), 0.32 s with `for` (2.6 s).
+  `fold_right` on a range no longer recurses.
+
+### Editors
+
+- VS Code and Neovim highlight `ref` as a keyword (`ref 0`), and as a type
+  after `of` (`impl showable of ref`).
 
 ### Fixed
 

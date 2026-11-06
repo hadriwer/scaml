@@ -267,6 +267,11 @@ impl showable of option {
     fn println o { print o; scaml_print_newline () }
 }
 
+impl showable of ref {
+    fn print r { print "ref "; print (*r) }
+    fn println r { print r; scaml_print_newline () }
+}
+
 trait foldable {
     type acc a b
     fn fold_left of (acc -> a -> acc) -> acc -> b -> acc
@@ -336,6 +341,13 @@ impl conversionnable of option {
     fn to_float o { to_float (to_int o) }
     fn to_string o { match o { None -> "None" | Some w -> "Some " + (to_string w)} }
     fn to_char o { match o { None -> failwith "to_char : None has no char." | Some w -> to_char w } }
+}
+
+impl conversionnable of ref {
+    fn to_int r { to_int (*r) }
+    fn to_float r { to_float (*r) }
+    fn to_string r { "ref " + to_string (*r) }
+    fn to_char r { to_char (*r) }
 }
 
 impl arithm of array, int {
@@ -431,6 +443,16 @@ impl concetanable of array {
     op @ a b { Array.append a b }
 }
 
+// `r += v`: changes the reference `r`, by any type's `+` (`s += "!"` on a
+// string ref, `l @= [x]` on a list ref).
+op += r v { r = *r + v }
+op -= r v { r = *r - v }
+op *= r v { r = *r * v }
+op /= r v { r = *r / v }
+op %= r v { r = *r % v }
+op **= r v { r = *r ** v }
+op @= r v { r = *r @ v }
+
 fn repeat n f x {
     fn aux n acc {
         if n == 0 then acc else aux (n-1) (f acc)
@@ -452,11 +474,14 @@ fn range_step low high step {
     else step
 }
 
-fn range_continues comp i high s {
-    let inclusive = comp high high;
-    if s > 0
-    then (if inclusive then i <= high else i < high)
-    else (if inclusive then i >= high else i > high)
+// What the primitives walking a range need (stdlib/primitive.ml): its
+// first value, its bound, whether the bound is included, its step (0 when
+// empty). Computed once per loop.
+fn range_walk r {
+    match r {
+        | Range (low, high, comp) -> (low, high, comp high high, range_step low high (range_default_step low high))
+        | RangeStep (low, high, comp, step) -> (low, high, comp high high, range_step low high step)
+    }
 }
 
 impl arithm of range, int {
@@ -504,47 +529,15 @@ op ..= lo hi { if lo <= hi then Range (lo, hi, (<=)) else Range (lo, hi, (>=)) }
 impl iterable of range {
     type a = int
 
-    fn iteri f r {
-        fn walk low high comp step {
-            let s = range_step low high step;
-            fn go i k { if range_continues comp i high s then { f k i; go (i + s) (k + 1) } else () }
-            if s == 0 then () else go low 0
-        }
-        match r {
-            | Range (low, high, comp) -> walk low high comp (range_default_step low high)
-            | RangeStep (low, high, comp, step) -> walk low high comp step
-        }
-    }
-
-    fn iter f r { iteri (^k i -> f i) r }
+    fn iteri f r { let (low, high, inc, st) = range_walk r; scaml_range_iteri f low high inc st }
+    fn iter f r { let (low, high, inc, st) = range_walk r; scaml_range_iter f low high inc st }
 }
 
 impl foldable of range {
     type a = int
 
-    fn fold_left f acc r {
-        fn walk low high comp step {
-            let s = range_step low high step;
-            fn go acc i { if range_continues comp i high s then go (f acc i) (i + s) else acc }
-            if s == 0 then acc else go acc low
-        }
-        match r {
-            | Range (low, high, comp) -> walk low high comp (range_default_step low high)
-            | RangeStep (low, high, comp, step) -> walk low high comp step
-        }
-    }
-
-    fn fold_right f r acc {
-        fn walk low high comp step {
-            let s = range_step low high step;
-            fn go i { if range_continues comp i high s then f i (go (i + s)) else acc }
-            if s == 0 then acc else go low
-        }
-        match r {
-            | Range (low, high, comp) -> walk low high comp (range_default_step low high)
-            | RangeStep (low, high, comp, step) -> walk low high comp step
-        }
-    }
+    fn fold_left f acc r { let (low, high, inc, st) = range_walk r; scaml_range_fold_left f acc low high inc st }
+    fn fold_right f r acc { let (low, high, inc, st) = range_walk r; scaml_range_fold_right f low high inc st acc }
 }
 
 impl arithm of range, range {
@@ -572,18 +565,7 @@ impl quantifiable of list {
 impl quantifiable of range {
     type a = int
 
-    fn forall p r {
-        fn walk low high comp step {
-            let s = range_step low high step;
-            fn go i { if range_continues comp i high s then (if p i then go (i + s) else false) else true }
-            if s == 0 then true else go low
-        }
-        match r {
-            | Range (low, high, comp) -> walk low high comp (range_default_step low high)
-            | RangeStep (low, high, comp, step) -> walk low high comp step
-        }
-    }
-
+    fn forall p r { let (low, high, inc, st) = range_walk r; scaml_range_forall p low high inc st }
     fn exists p r { not (forall (^i -> not (p i)) r) }
 }
 
@@ -629,51 +611,21 @@ impl negatable of list {
     fn neg l { List.map (^x -> neg x) l }
 }
 
-// How many indices `low`, `low + st`, ... a range goes through before
-// [range_continues] stops it.
-fn range_count low high comp st {
-    let inclusive = comp high high;
-    if st > 0 then {
-        let bound = if inclusive then high + 1 else high;
-        if bound <= low then 0 else (bound - low + st - 1) / st
-    } else if st < 0 then {
-        let bound = if inclusive then high - 1 else high;
-        if bound >= low then 0 else (low - bound - st - 1) / (0 - st)
-    } else 0
-}
-
 impl indexable of string, range {
     // Built in one go (`String.sub` for a step of 1), not char by char.
     op [] s r {
-        fn walk low high comp step {
-            let st = range_step low high step;
-            let n = range_count low high comp st;
-            if st == 1 then String.sub s low n
-            else String.init n (^k -> s[low + k * st])
-        }
-        match r {
-            | Range (low, high, comp) -> walk low high comp (range_default_step low high)
-            | RangeStep (low, high, comp, step) -> walk low high comp step
-        }
+        let (low, high, inc, st) = range_walk r;
+        let n = scaml_range_count low high inc st;
+        if st == 1 then String.sub s low n
+        else String.init n (^k -> s[low + k * st])
     }
     op []? s r { try Some s[r] with {| Invalid_argument _ -> None}}
 }
 
 impl indexable of array, range {
     op [] a r {
-        fn walk low high comp step {
-            let st = range_step low high step;
-            fn go acc i {
-                if range_continues comp i high st
-                then go (Array.get a i :: acc) (i + st)
-                else acc
-            }
-            if st == 0 then [||] else Array.of_list (List.rev (go [] low))
-        }
-        match r {
-            | Range (low, high, comp) -> walk low high comp (range_default_step low high)
-            | RangeStep (low, high, comp, step) -> walk low high comp step
-        }
+        let (low, high, inc, st) = range_walk r;
+        Array.init (scaml_range_count low high inc st) (^k -> Array.get a (low + k * st))
     }
 
     op []? a r { try Some a[r] with {| Invalid_argument _ -> None}}

@@ -1,0 +1,16 @@
+// Comparisons on int, float, char, bool and string become OCaml's own,
+// annotated (see `specialize_comparisons` in bin/main.ml): same results,
+// and the polymorphic ones still work elsewhere (tuples, lists, options).
+
+fn main () {
+  println (3 < 4 && 4 <= 4 && 5 > 4 && 5 >= 5 && 3 == 3 && 3 != 4);
+  println (1.5 < 2. && 2.5 >= 2.5 && 0.1 != 0.2);
+  println ('a' < 'b' && 'z' == 'z');
+  println (false < true && true == true);
+  println ("abc" < "abd" && "x" == "x" && "x" != "y");
+  println ((1, "a") < (1, "b") && [1; 2] == [1; 2] && Some 3 > None);
+  println (fold_left (^m x -> if x > m then x else m) 0 [| 3; 9; 2 |]);
+  println (fold_left (+) 0 (1..=10));
+  println (fold_left (+) 0 (10..0));
+  println (sort compare [| 'c'; 'a'; 'b' |]);
+}

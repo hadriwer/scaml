@@ -43,6 +43,39 @@ let scaml_print_int = print_int
 let scaml_print_float = print_float
 let scaml_print_char = print_char
 
+(* RANGES: walked with OCaml's `for` on ints, `low`, `low + st`, ... (`st`
+   already of the right sign, 0 for an empty range), up to `high`, included
+   or not. *)
+let scaml_range_count (low : int) (high : int) (inclusive : bool) (st : int) =
+  if st > 0 then
+    let bound = if inclusive then high + 1 else high in
+    if bound <= low then 0 else (bound - low + st - 1) / st
+  else if st < 0 then
+    let bound = if inclusive then high - 1 else high in
+    if bound >= low then 0 else (low - bound - st - 1) / (- st)
+  else 0
+
+let scaml_range_iteri f low high inclusive st =
+  for k = 0 to scaml_range_count low high inclusive st - 1 do f k (low + k * st) done
+
+let scaml_range_iter f low high inclusive st =
+  for k = 0 to scaml_range_count low high inclusive st - 1 do f (low + k * st) done
+
+let scaml_range_fold_left f acc low high inclusive st =
+  let acc = ref acc in
+  for k = 0 to scaml_range_count low high inclusive st - 1 do acc := f !acc (low + k * st) done;
+  !acc
+
+let scaml_range_fold_right f low high inclusive st acc =
+  let acc = ref acc in
+  for k = scaml_range_count low high inclusive st - 1 downto 0 do acc := f (low + k * st) !acc done;
+  !acc
+
+let scaml_range_forall p low high inclusive st =
+  let n = scaml_range_count low high inclusive st in
+  let rec go k = k >= n || (p (low + k * st) && go (k + 1)) in
+  go 0
+
 (* Comparable *)
 let scaml_compare = compare
 let scaml_lt = (<)

@@ -7,7 +7,11 @@ exception Lex_error of string
    characters as in OCaml (so a user-defined operator gets the same
    priority as there, e.g. `*.` like `*`). *)
 let operator c =
-  if String.length c >= 2 && String.sub c 0 2 = "**" then OP_POW c
+  let n = String.length c in
+  (* `r += 1`, `-=`, `*=`, `/=`, `%=`, `**=`, `@=`: changing a reference,
+     looser than every other operator, `r += a + b` adding `a + b`. *)
+  if n >= 2 && c.[n - 1] = '=' && List.mem (String.sub c 0 (n - 1)) [ "+"; "-"; "*"; "/"; "%"; "**"; "@" ] then OP_ASSIGN c
+  else if String.length c >= 2 && String.sub c 0 2 = "**" then OP_POW c
   (* The bitwise operators, with the priority of OCaml's `land`, `lor`,
      `lxor` (like `*`) and `lsl`, `asr` (like `**`). *)
   else if c = "&!" || c = "|!" || c = "^!" then OP_MUL c
@@ -127,7 +131,7 @@ let brackets_of lexbuf =
 let after_index = ref false
 
 let operator_symbol = function
-  | OP_OR s | OP_AND s | OP_CMP s | OP_AT s | OP_CONS s | OP_ADD s | OP_MUL s | OP_POW s -> Some s
+  | OP_ASSIGN s | OP_OR s | OP_AND s | OP_CMP s | OP_AT s | OP_CONS s | OP_ADD s | OP_MUL s | OP_POW s -> Some s
   | _ -> None
 
 let token lexbuf =
