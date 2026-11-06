@@ -493,7 +493,18 @@ adds `a * 2 + 1`. Defined in the standard library like any operator (`op
 += r v { r = *r + v }`), they're not to be confused with an indexing
 operator, `t[i] += v` (see [Indexing operators](#indexing-operators)).
 
+Between braces, `{ x = 1; y = 2 }` is a record when `x` and `y` are fields
+of a record type declared above, and sets the references `x` and `y`
+otherwise.
+
 ## Timing
+
+> [!WARNING]
+> `#time` is for debugging only: to find what's slow, or compare two
+> versions of a computation. Remove it once done. It cleans the whole
+> memory before each measure (see below), which costs time on its own, up
+> to a second with hundreds of MB still in use, and slows the program down
+> as a whole.
 
 `#time` before a `let` or an expression prints how long computing it took
 (wall clock), on the error output, the program running as usual:
@@ -520,14 +531,10 @@ The time is shown in s, ms, µs or ns, and what was computed as written in
 the source (cut after 60 characters).
 
 Before starting the clock, `#time` compacts the memory (`Gc.compact ()`):
-what came before is collected and doesn't weigh on what's timed, so two
-`#time` in a row compare fairly. That compaction isn't counted, but it
-takes time: `#time` is a tool to debug and compare, not to leave in a
-program.
-
-Between braces, `{ x = 1; y = 2 }` is a record when `x` and `y` are fields
-of a record type declared above, and sets the references `x` and `y`
-otherwise.
+what came before is collected, and the memory it held given back, so it
+doesn't weigh on what's timed and two `#time` in a row compare fairly.
+That compaction isn't counted in the time shown, but the program still
+pays it, hence the warning above.
 
 ---
 
