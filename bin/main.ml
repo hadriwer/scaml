@@ -1775,12 +1775,14 @@ let harvest_dispatch ?(cache = false)
    (see [harvest_dispatch]), would never learn what `l` is used as. As
    `(fun l -> ...) (init 1 2)`, whose parameter stays monomorphic, it does
    (a `match` would generalize its scrutinee the same way). *)
-let ungeneralize_self_results trait_methods (abstract_types : (string, string list) Hashtbl.t) (structure : Parsetree.structure) =
+let ungeneralize_self_results trait_methods (abstract_types : (string, string list) Hashtbl.t) overloads (structure : Parsetree.structure) =
   let returning_self =
     List.filter_map
       (fun (name, trait, names, _) ->
         match List.rev names, Option.bind (Hashtbl.find_opt abstract_types trait) (fun ts -> List.nth_opt (List.rev ts) 0) with
-        | ret :: (_ :: _ as params), Some self when ret = self && not (List.mem self params) -> Some name
+        (* not an overloaded operator (`op - of a -> b -> c`): picked from
+           its arguments' types, whatever its result *)
+        | ret :: (_ :: _ as params), Some self when ret = self && not (List.mem self params) && not (Hashtbl.mem overloads name) -> Some name
         | _ -> None)
       trait_methods
   in
@@ -3097,6 +3099,50 @@ let drop_unused_generics env methods (method_names : string list) (structure : P
   let mapper = { Ast_mapper.default_mapper with expr } in
   mapper.structure mapper structure
 
+(* A variable, function or record field named like an OCaml keyword
+   (`let private = ..`, the stdlib's `fn for`, a field `val`): renamed
+   `scaml_private`, ... everywhere. OCaml 5.2+ would accept `\#private`, but
+   not an older OCaml (France-IOI's, for one). *)
+(* Not `mod`, `land`, `lor`, `lxor`, `lsl`, `lsr`, `asr`, `or`: those are
+   values too, which the stdlib uses (`(mod)`). *)
+let ocaml_keywords =
+  [ "and"; "as"; "assert"; "begin"; "class"; "constraint"; "do"; "done"; "downto"; "else"; "end";
+    "exception"; "external"; "false"; "for"; "fun"; "function"; "functor"; "if"; "in"; "include";
+    "inherit"; "initializer"; "lazy"; "let"; "match"; "method"; "module"; "mutable"; "new"; "nonrec";
+    "object"; "of"; "open"; "private"; "rec"; "sig"; "struct"; "then"; "to"; "true"; "try"; "type";
+    "val"; "virtual"; "when"; "while"; "with"; "effect" ]
+
+let rename_ocaml_keywords (structure : Parsetree.structure) =
+  let rename n = if List.mem n ocaml_keywords then "scaml_" ^ n else n in
+  let lid (l : Longident.t Location.loc) =
+    match l.txt with Lident n when List.mem n ocaml_keywords -> { l with txt = Longident.Lident (rename n) } | _ -> l
+  in
+  let str (s : string Location.loc) = { s with txt = rename s.txt } in
+  let default = Ast_mapper.default_mapper in
+  let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) =
+    let e = default.expr m e in
+    match e.pexp_desc with
+    | Pexp_ident l -> { e with pexp_desc = Pexp_ident (lid l) }
+    | Pexp_field (r, l) -> { e with pexp_desc = Pexp_field (r, lid l) }
+    | Pexp_setfield (r, l, v) -> { e with pexp_desc = Pexp_setfield (r, lid l, v) }
+    | Pexp_record (fs, w) -> { e with pexp_desc = Pexp_record (List.map (fun (l, v) -> (lid l, v)) fs, w) }
+    | _ -> e
+  in
+  let pat (m : Ast_mapper.mapper) (p : Parsetree.pattern) =
+    let p = default.pat m p in
+    match p.ppat_desc with
+    | Ppat_var s -> { p with ppat_desc = Ppat_var (str s) }
+    | Ppat_alias (q, s) -> { p with ppat_desc = Ppat_alias (q, str s) }
+    | Ppat_record (fs, c) -> { p with ppat_desc = Ppat_record (List.map (fun (l, q) -> (lid l, q)) fs, c) }
+    | _ -> p
+  in
+  let label_declaration (m : Ast_mapper.mapper) (ld : Parsetree.label_declaration) =
+    let ld = default.label_declaration m ld in
+    { ld with pld_name = str ld.pld_name }
+  in
+  let mapper = { default with expr; pat; label_declaration } in
+  mapper.structure mapper structure
+
 (* `fun a -> fun b -> e`, as every function of several parameters is built
    (one `fun` per parameter, see lib/parser.mly), into `fun a b -> e`. Since
    OCaml 5.2 a function's arity is the number of parameters of its own
@@ -3181,7 +3227,9 @@ let specialize_comparisons (typed : Typedtree.structure) (structure : Parsetree.
     in
     let it = { Tast_iterator.default_iterator with expr } in
     it.structure it typed;
-    let op_ident loc op = Ast_helper.Exp.ident ~loc (Location.mkloc (Option.get (Longident.unflatten [ "Stdlib"; op ])) loc) in
+    (* unqualified, OCaml's own: the generated code never redefines `<`
+       (SCaml's operators are `op___N___`), and `Stdlib.` is OCaml 4.07+ *)
+    let op_ident loc op = Ast_helper.Exp.ident ~loc (Location.mkloc (Longident.Lident op) loc) in
     let ty_of loc ty = Ast_helper.Typ.constr ~loc (Location.mkloc (Longident.Lident ty) loc) [] in
     let expr (m : Ast_mapper.mapper) (e : Parsetree.expression) =
       match e.pexp_desc with
@@ -3536,7 +3584,7 @@ let () =
       if trait_methods = [] then user_structure
       else begin
         let abstract_types = collect_trait_abstract_types user_structure in
-        let user_structure = ungeneralize_self_results trait_methods abstract_types user_structure in
+        let user_structure = ungeneralize_self_results trait_methods abstract_types (collect_overloads user_structure) user_structure in
         let ctor_methods = collect_ctor_methods user_structure in
         let overloads = collect_overloads user_structure in
         (* Each round's rewrite gives the next probe real types for what it
@@ -3699,6 +3747,7 @@ let () =
       | None -> full_structure
     in
     let full_structure = timed "fuse functions" (fun () -> fuse_functions full_structure) in
+    let full_structure = rename_ocaml_keywords full_structure in
     let full_structure = timed "dead code" (fun () -> eliminate_dead_code full_structure) in
 
     let ocaml_src = timed "print OCaml" (fun () -> Format.asprintf "%a" Pprintast.structure full_structure) in

@@ -112,6 +112,11 @@ syntax and the standard library may still change between minor versions.
 
 ### Fixed
 
+- `let d = a - b;` (any arithmetic operator) was compiled to `(fun d ->
+  ..) (a - b)`: the rewrite meant for a trait method picked from its
+  result's type (`let l = init 1 2`) also took the operators of `arithm`,
+  whose result type is free too. Plain `let` again (an older OCaml
+  allocated a closure for each of them).
 - A generic function passing `for` (or any generic function) a lambda that
   calls its own function argument, `fn g n h { for (0..n) (^i -> h i) }`,
   failed ("Can't tell which impl of `iter`", or `h`'s argument read as
