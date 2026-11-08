@@ -2871,8 +2871,13 @@ let monomorphize (method_names : string list) (cache : (string, string) Hashtbl.
                gets cloned first, and its clone knows more (`parse_tuple l`
                calling `split_apply_on_char f c l[1..2]`: `l` is only
                known in the clone). A clone made here, from what is
-               still unknown, would stay stuck. *)
-            let partial_ok = List.exists Option.is_some params && not (is_clone_name name) && !inside = [] in
+               still unknown, would stay stuck. Unless that function is a
+               clone already, left partly generic (`g__mono4 n h` passing
+               `for` a lambda calling `h`): nothing will know more. *)
+            let partial_ok =
+              List.exists Option.is_some params && not (is_clone_name name)
+              && List.for_all (fun id -> is_clone_name (Ident.name id)) !inside
+            in
             if List.length params = arity && (List.for_all Option.is_some params || partial_ok) then begin
               let tys = List.map (function Some t -> t | None -> Ast_helper.Typ.any ~loc ()) params in
               let sig_text = String.concat " -> " (List.map (Format.asprintf "%a" Pprintast.core_type) tys) in

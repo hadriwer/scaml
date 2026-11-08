@@ -1,0 +1,169 @@
+//**************************************************************************//
+//                                                                          //
+//                                  SCaml                                   //
+//                                                                          //
+//   Hadrien Lagier (wer)                                                   //
+//   Claude (Anthropic), co-author                                          //
+//                                                                          //
+//   Copyright (c) 2026 wer                                                 //
+//                                                                          //
+//   This file is distributed under the terms of the MIT License,           //
+//   see the file LICENSE at the root of the project.                       //
+//                                                                          //
+//**************************************************************************//
+// Double-ended queue: a doubly linked list, read from either end.
+
+type a node {
+  val of a ref;
+  prev of a node option ref;
+  next of a node option ref
+}
+
+type a dequeue {
+  head of a node option ref;
+  tail of a node option ref;
+  size of int ref
+}
+
+// size of it
+
+impl sizable of dequeue {
+  fn len d { *d.size }
+}
+
+// iteration and folding, front to back (`fold_right` back to front, along
+// the `prev` links: no list built)
+
+impl iterable of dequeue {
+  fn iter f d {
+    fn go o { match o { | None -> () | Some n -> { f (*n.val); go (*n.next) } } }
+    go (*d.head)
+  }
+
+  fn iteri f d {
+    fn go i o { match o { | None -> () | Some n -> { f i (*n.val); go (i + 1) (*n.next) } } }
+    go 0 (*d.head)
+  }
+}
+
+impl foldable of dequeue {
+  fn fold_left f acc d {
+    fn go acc o { match o { | None -> acc | Some n -> go (f acc (*n.val)) (*n.next) } }
+    go acc (*d.head)
+  }
+
+  fn fold_right f d acc {
+    fn go acc o { match o { | None -> acc | Some n -> go (f (*n.val) acc) (*n.prev) } }
+    go acc (*d.tail)
+  }
+}
+
+// stops at the first element that decides
+
+impl quantifiable of dequeue {
+  fn forall p d {
+    fn go o { match o { | None -> true | Some n -> p (*n.val) && go (*n.next) } }
+    go (*d.head)
+  }
+
+  fn exists p d {
+    fn go o { match o { | None -> false | Some n -> p (*n.val) || go (*n.next) } }
+    go (*d.head)
+  }
+}
+
+// display, front to back
+
+impl showable of dequeue {
+  fn print d {
+    print "Dequeue [ ";
+    iteri (^i x -> {
+      if i > 0 then print "; " else ();
+      print x
+    }) d;
+    print " ]"
+  }
+
+  fn println d { print d; println "" }
+}
+
+// make a dq
+
+fn make_dequeue () { { head = ref None; tail = ref None; size = ref 0 } }
+
+// insertion, in constant time: `x :> d` at the front, `x :< d` at the back
+
+impl pushable_front of dequeue {
+  op :> x d {
+    let n = Some { val = ref x; prev = ref None; next = ref (*d.head) };
+    match *d.head { | None -> d.tail = n | Some h -> h.prev = n };
+    d.head = n;
+    d.size += 1
+  }
+}
+
+impl pushable_back of dequeue {
+  op :< x d {
+    let n = Some { val = ref x; prev = ref (*d.tail); next = ref None };
+    match *d.tail { | None -> d.head = n | Some t -> t.next = n };
+    d.tail = n;
+    d.size += 1
+  }
+}
+
+// deletion
+
+fn pop_front dq {
+  match *(dq.head) {
+    | None -> None
+    | Some n -> {
+        match *(n.next) {
+          | None -> { dq.head = None; dq.tail = None; }
+          | Some nx -> { nx.prev = None; dq.head = Some nx; }
+        };
+        dq.size -= 1;
+        Some (*n.val);
+      }
+  }
+}
+
+fn pop_back dq {
+  match *(dq.tail) {
+    | None -> None
+    | Some n -> {
+        match *(n.prev) {
+          | None -> { dq.head = None; dq.tail = None; }
+          | Some pv -> { pv.next = None; dq.tail = Some pv }
+        };
+        dq.size -= 1;
+        Some (*n.val)
+      }
+  }
+}
+
+fn init_dequeue ?(dir=0) n f {
+  let dq = make_dequeue ();
+  for (0..n) (^i -> if dir == 0 then (f i) :> dq else (f i) :< dq);
+  dq
+}
+
+fn update f dq {
+  fn go { function None -> () | Some n -> { n.val = f (*n.val); go (*n.next) }}
+  go (*dq.head);
+}
+
+// get top and back, constant time
+
+fn top_front dq {
+  match *dq.head {
+    | None -> None
+    | Some n -> Some (*n.val)
+  }
+}
+
+fn top_back dq {
+  match *dq.tail {
+    | None -> None
+    | Some n -> Some (*n.val)
+  }
+}

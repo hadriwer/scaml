@@ -1,0 +1,10 @@
+// A generic function passing `for` a lambda that calls its own function
+// argument: its clone, still generic in `h`, clones `for` in turn, so
+// that `h`'s argument is known (`x + 1` below).
+
+fn g n h { for (0..n) (^i -> h i) }
+
+fn main () {
+  g 3 (^x -> println (x + 1));
+  g 2 println;
+}

@@ -35,13 +35,22 @@ syntax and the standard library may still change between minor versions.
 
 - `stdlib/qs.scaml` (`#use "stdlib/qs.scaml"`): queues (`Queue.t`) and
   stacks (`Stack.t`), `make_queue ()`, `make_stack ()`, `init_queue n f`,
-  `init_stack n f`. `x :> q` pushes on either (trait `pushable`), `pop`,
+  `init_stack n f`. `x :< q` pushes at the back of a queue, `x :> s` on a
+  stack (its front, the top): traits `pushable_back` and
+  `pushable_front` of the core library. `pop`,
   `top` and `is_empty` (trait `qsable`) work on both, `len`, and `iter`,
   `iteri`, `fold_left`, `fold_right`, `map`, `mapi`, `map2` and `println`
   over the elements, in the order they come out: front to back for a
   queue, top to bottom for a stack (`println q` prints `Queue [ 1; 2; 3 ]`,
   `println s` prints `Stack [ 3; 2; 1 ]`). `map` and its variants build a
   new queue or stack of the same orientation.
+- `stdlib/dequeue.scaml` (`#use "stdlib/dequeue.scaml"`): double-ended
+  queues, a doubly linked list (`a node`, `a dequeue`). `make_dequeue ()`,
+  `x :> d` and `x :< d` push at the front and at the back in constant
+  time, `update f d` changes every value in place. `len`, and `iter`,
+  `iteri`, `fold_left`, `forall`, `exists` and `println` front to back;
+  `fold_right` back to front along the `prev` links, without building a
+  list (`println d` prints `Dequeue [ 1; 2; 3 ]`).
 - `iterable` for `string`, over its chars: `iter (^c -> ..) s`, `iteri`.
 - Arithmetic on options, `Some 2 * Some 3` is `Some 6`: an operation with
   a `None` gives the other operand (`Some 1 - None` is `Some 1`), so that
@@ -103,6 +112,10 @@ syntax and the standard library may still change between minor versions.
 
 ### Fixed
 
+- A generic function passing `for` (or any generic function) a lambda that
+  calls its own function argument, `fn g n h { for (0..n) (^i -> h i) }`,
+  failed ("Can't tell which impl of `iter`", or `h`'s argument read as
+  `unit`): its clone, still generic in `h`, now clones `for` in turn.
 - `len` (or any trait method) on a value created by a function call whose
   type nothing fixes, `let q = make_queue (); len q`, failed with "No impl
   of `len` (trait `sizable`) for 'a Stdlib__Queue.t": the type variable

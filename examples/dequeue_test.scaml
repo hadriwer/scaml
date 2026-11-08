@@ -1,0 +1,44 @@
+#use "stdlib/dequeue.scaml"
+
+fn is_palindrom dq {
+  fn aux acc h t {
+    match h, t {
+      | None, None -> acc
+      | None, _ | _, None -> false
+      | Some n1, Some n2 -> aux ((*n1.val == *n2.val) && acc) (*n1.next) (*n2.prev)
+    }
+  }
+  aux true (*dq.head) (*dq.tail)
+}
+
+fn main () {
+  let dq = make_dequeue ();
+  println (len dq);
+  println dq;
+  1 :> dq;
+  2 :< dq;
+  3 :> dq;
+  println dq;                                       // should be 3, 1, 2
+  for (0..3) (^_ -> println (pop_front dq));        // Some 3, Some 1, Some 2
+  println (pop_front dq);                           // None
+  println dq;
+
+  // init
+  let n = 10;
+  let dq = init_dequeue dir=1 n (^x -> x);
+  println dq;
+  update (^x -> x + 1) dq;                          // in place: () back
+  println dq;
+
+  let f = ^n -> init_dequeue dir=1 (len n) (^i -> n[i]);
+
+  let dq = f "anna";
+  println dq;
+  println (is_palindrom dq);
+
+  let dq = f "wer";
+  println dq;
+  println (is_palindrom dq);
+  println (top_front dq);
+  println (top_back dq);
+}

@@ -1,0 +1,25 @@
+#use "stdlib/dequeue.scaml"
+
+// A dequeue pushed at both ends (`:>` at the front, `:<` at the back), then
+// iter, iteri, fold_left, fold_right (along the `prev` links), forall,
+// exists, len, print.
+
+fn main () {
+  let d = make_dequeue ();
+  println d;
+  println (len d);
+  2 :< d; 3 :< d; 1 :> d; 4 :< d; 0 :> d;
+  println d;
+  println (len d);
+  iter (^x -> { print x; print " " }) d; println ();
+  iteri (^i x -> { print i; print ":"; print x; print " " }) d; println ();
+  println (fold_left (^acc x -> x :: acc) [] d);
+  println (fold_right (^x acc -> x :: acc) d []);
+  println (sum 0 d);
+  println (forall (^x -> x > 0) d);
+  println (exists (^x -> x == 3) d);
+  println (exists (^x -> x == 9) d);
+  let s = make_dequeue ();
+  "b" :< s; "a" :> s;
+  println s;
+}

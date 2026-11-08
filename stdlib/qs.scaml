@@ -14,16 +14,8 @@
 //**************************************************************************//
 // file that support stack and queue
 
-// operation of insertion
-
-trait pushable {
-  type a
-  type t of 1
-  op :> of a -> a t -> unit
-}
-
-impl pushable of Queue.t { op :> x q { Queue.push x q } }
-impl pushable of Stack.t { op :> x s { Stack.push x s } }
+impl pushable_back of Queue.t { op :< x q { Queue.push x q } }
+impl pushable_front of Stack.t { op :> x s { Stack.push x s } }
 
 // create queue or stack, function to init
 
@@ -38,7 +30,7 @@ fn make_stack () {
 fn init_queue n f {
   let q = make_queue ();
   iter (^i -> {
-    (f i) :> q;
+    (f i) :< q;
   }) (0..n);
   q
 }

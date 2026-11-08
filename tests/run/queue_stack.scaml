@@ -1,24 +1,31 @@
 #use "stdlib/qs.scaml"
 
-// a generic function called on a stack and on a queue whose element type
-// nothing fixes yet: the impl of `:>` is picked from `Stack.t` / `Queue.t`
-fn copy_name sd name {
+// generic functions called on a stack and on a queue whose element type
+// nothing fixes yet: the impl of `:>` (pushed at the front, a stack's top)
+// is picked from `Stack.t`, that of `:<` (at the back) from `Queue.t`
+fn copy_name_front sd name {
   iter (^c -> c :> sd) name;
 }
 
-fn fill sd l { iter (^x -> x :> sd) l }
+fn copy_name_back sd name {
+  iter (^c -> c :< sd) name;
+}
+
+fn fill_front sd l { iter (^x -> x :> sd) l }
+
+fn fill_back sd l { iter (^x -> x :< sd) l }
 
 fn main () {
   let s, q = (make_stack (), make_queue ());
-  copy_name s "abc";
-  copy_name q "abc";
+  copy_name_front s "abc";
+  copy_name_back q "abc";
   println s;
   println q;
 
   let s2 = make_stack ();
   let q2 = make_queue ();
-  fill s2 [1; 2; 3];
-  fill q2 (4..7);
+  fill_front s2 [1; 2; 3];
+  fill_back q2 (4..7);
   println (len s2, len q2);
   println (map (^x -> x * 10) s2);
   println (fold_left (^a x -> a + x) 0 q2);

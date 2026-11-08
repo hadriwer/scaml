@@ -108,6 +108,20 @@ size: 100
 [ 1; 4; 9 ]
 200
 [| 11; 2; 3 |]
+=== run/dequeue.scaml
+Dequeue [  ]
+0
+Dequeue [ 0; 1; 2; 3; 4 ]
+5
+0 1 2 3 4 
+0:0 1:1 2:2 3:3 4:4 
+[ 4; 3; 2; 1; 0 ]
+[ 0; 1; 2; 3; 4 ]
+10
+false
+true
+false
+Dequeue [ "a"; "b" ]
 === run/destructuring.scaml
 3
 10
@@ -220,6 +234,12 @@ Range from 0 to 3 excluded. With a step of 1.
 true
 === run/function_clone.scaml
 2
+=== run/generic_for_callback.scaml
+1
+2
+3
+0
+1
 === run/hashmap.scaml
 11
 None
