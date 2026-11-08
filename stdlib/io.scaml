@@ -42,3 +42,9 @@ fn scan_string () {
 fn scan_float () {
   Scanf.scanf " %f" (^x -> x)
 }
+
+fn scan_int_pair () {
+  let x = scan_int ();
+  let y = scan_int ();
+  (x, y)
+}
