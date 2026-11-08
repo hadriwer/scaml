@@ -71,3 +71,25 @@ fn uniform a b {
 fn fact n {
   fold_left (*) 1 (1..=n)
 }
+
+fn isqrt n {
+  if n < 0 then failwith "isqrt : negative argument"
+  else {
+    fn go lo hi {
+      if lo == hi then lo
+      else { 
+        let mid = lo + (hi - lo + 1) / 2; 
+        if mid <= n / mid then go mid hi else go lo (mid-1)
+      }
+    }
+    go 0 n
+  }
+}
+
+fn euc_dist2d (x1,y1) (x2,y2) {
+  sqrt (((to_float x1) - (to_float x2))**2 + ((to_float y1) - (to_float y2))**2)
+}
+
+fn euc_dist c1 c2 {
+  sqrt (sum 0. (map2 (^pi qi -> (pi - qi)**2) c1 c2))
+}
