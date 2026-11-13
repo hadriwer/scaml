@@ -15,7 +15,7 @@ fn length l {
 fn main () {
     let l = [1; 2; 3];
     println l;
-    println (length [1; 2; 3]);
+    println (length l);
 }
 ```
 
