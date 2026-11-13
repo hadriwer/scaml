@@ -265,6 +265,20 @@ tuple
 4
 trois
 0
+=== run/hashset.scaml
+3
+(true, false)
+[ 2; 3; 5 ]
+10
+(true, true)
+[ 2; 3; 5; 7 ]
+[ 2; 3; 5; 7 ]
+[ 2 ]
+[ 3; 5 ]
+(true, false)
+{ "b" }
+{ "a":  }
+0
 === run/index_ops.scaml
 [| 11; 5; 3 |]
 103

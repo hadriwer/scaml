@@ -1,0 +1,32 @@
+#use "stdlib/hashset.scaml"
+#use "stdlib/hashmap.scaml"
+
+// A set (`a hashset`): building, `x :< s` (pushable_back, also on an
+// empty set whose element type nothing fixed yet), contains, discard, set
+// operations, the traits over its elements; used next to hashmap.scaml
+// (no name in common), a hash map of `()` staying a hash map.
+
+fn main () {
+  let s = hashset_of_list [3; 1; 2; 3; 1];
+  println (len s);
+  println (contains s 2, contains s 5);
+  5 :< s;
+  5 :< s;
+  discard s 1;
+  println (sort compare (elements s));
+  println (sum 0 s);
+  println (forall (^x -> x > 0) s, exists (^x -> x == 5) s);
+  let t = hashset_of_list [2; 7];
+  println (sort compare (elements (union s t)));
+  println (sort compare (elements (s @ t)));
+  println (sort compare (elements (inter s t)));
+  println (sort compare (elements (diff s t)));
+  println (subset (hashset_of_list [2]) s, subset t s);
+  let e = make_hashset 4;
+  "b" :< e;
+  println e;
+  let m = hashmap_of_list [("a", ())];
+  println m;
+  clear_set e;
+  println (len e);
+}

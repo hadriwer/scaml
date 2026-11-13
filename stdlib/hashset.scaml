@@ -1,0 +1,109 @@
+//**************************************************************************//
+//                                                                          //
+//                                  SCaml                                   //
+//                                                                          //
+//   Hadrien Lagier (wer)                                                   //
+//   Claude (Anthropic), co-author                                          //
+//                                                                          //
+//   Copyright (c) 2026 wer                                                 //
+//                                                                          //
+//   This file is distributed under the terms of the MIT License,           //
+//   see the file LICENSE at the root of the project.                       //
+//                                                                          //
+//**************************************************************************//
+// Hash sets: a hash table whose values are all `()`, in a type of its own,
+// `a hashset` (so that a set isn't taken for a hash map, and that
+// `pushable_back`, on one-parameter types, applies: `x :< s`).
+
+type a hashset { tbl of (a, unit) Hashtbl.t }
+
+// Building
+
+fn make_hashset n { { tbl = Hashtbl.create n } }
+
+fn hashset_of_list l {
+  let s = make_hashset (len l);
+  iter (^x -> Hashtbl.replace s.tbl x ()) l;
+  s
+}
+
+// Access: `x :< s` adds `x` (no effect if already in)
+
+impl pushable_front of hashset {
+  op :> x s { Hashtbl.replace s.tbl x () }
+}
+
+impl pushable_back of hashset {
+  op :< x s { Hashtbl.replace s.tbl x () }
+}
+
+fn contains s x { Hashtbl.mem s.tbl x }
+
+fn discard s x { Hashtbl.remove s.tbl x }
+
+fn clear_set s { Hashtbl.reset s.tbl }
+
+// Contents (in no particular order)
+
+fn elements s { Hashtbl.fold (^x _ acc -> x :: acc) s.tbl [] }
+
+impl sizable of hashset {
+  fn len s { Hashtbl.length s.tbl }
+}
+
+// Set operations, each a new set (`s1 @ s2` the union)
+
+impl concetanable of hashset {
+  op @ s1 s2 {
+    let r = { tbl = Hashtbl.copy s1.tbl };
+    Hashtbl.iter (^x _ -> Hashtbl.replace r.tbl x ()) s2.tbl;
+    r
+  }
+}
+
+fn union s1 s2 { s1 @ s2 }
+
+fn inter s1 s2 {
+  let r = make_hashset (len s1);
+  Hashtbl.iter (^x _ -> if Hashtbl.mem s2.tbl x then Hashtbl.replace r.tbl x () else ()) s1.tbl;
+  r
+}
+
+fn diff s1 s2 {
+  let r = make_hashset (len s1);
+  Hashtbl.iter (^x _ -> if Hashtbl.mem s2.tbl x then () else Hashtbl.replace r.tbl x ()) s1.tbl;
+  r
+}
+
+// every element of s1 in s2
+fn subset s1 s2 { Hashtbl.fold (^x _ ok -> ok && Hashtbl.mem s2.tbl x) s1.tbl true }
+
+// Traits, over the elements
+
+impl iterable of hashset {
+  fn iter f s { Hashtbl.iter (^x _ -> f x) s.tbl }
+  fn iteri f s { ignore (Hashtbl.fold (^x _ i -> { f i x; i + 1 }) s.tbl 0) }
+}
+
+impl foldable of hashset {
+  fn fold_left f acc s { Hashtbl.fold (^x _ acc -> f acc x) s.tbl acc }
+  fn fold_right f s acc { Hashtbl.fold (^x _ acc -> f x acc) s.tbl acc }
+}
+
+impl quantifiable of hashset {
+  fn forall p s { Hashtbl.fold (^x _ ok -> ok && p x) s.tbl true }
+  fn exists p s { Hashtbl.fold (^x _ ok -> ok || p x) s.tbl false }
+}
+
+impl showable of hashset {
+  fn print s {
+    print "{ ";
+    iteri (^i x -> {
+      if i > 0 then print "; " else ();
+      print x
+    }) s;
+    print " }"
+  }
+
+  fn println s { print s; println "" }
+}

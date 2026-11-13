@@ -51,6 +51,13 @@ syntax and the standard library may still change between minor versions.
   `iteri`, `fold_left`, `forall`, `exists` and `println` front to back;
   `fold_right` back to front along the `prev` links, without building a
   list (`println d` prints `Dequeue [ 1; 2; 3 ]`).
+- `stdlib/hashset.scaml` (`#use "stdlib/hashset.scaml"`): hash sets, a
+  type of their own (`a hashset`, over a hash table of `()`).
+  `make_hashset n`, `hashset_of_list l`, `x :< s` to add (trait
+  `pushable_back`), `contains`, `discard`, `clear_set`, `elements`, `len`,
+  `union` (also `s1 @ s2`), `inter`, `diff`, `subset`; `iter`,
+  `fold_left`, `forall`, `exists` and `println` over the elements
+  (`{ 1; 2; 3 }`).
 - `iterable` for `string`, over its chars: `iter (^c -> ..) s`, `iteri`.
 - Arithmetic on options, `Some 2 * Some 3` is `Some 6`: an operation with
   a `None` gives the other operand (`Some 1 - None` is `Some 1`), so that
